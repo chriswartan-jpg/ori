@@ -1,3 +1,9 @@
+> **Historisches Konzeptdokument.** Der Scope hat sich seit diesem Stand geändert: Ori ist
+> jetzt drei selbst gefüllte Netzwerke (Business, Freunde, Familie) mit Interaktions-Log,
+> nicht ein LinkedIn-Export-Graph. Assistent und MCP sind aus dem MVP heraus verschoben, und
+> "Freunde und Familie" ist nicht mehr aufgeschoben, sondern der Kern. Verbindlich sind
+> `docs/PROJECT.md` und `docs/ARCHITECTURE.md`.
+
 # Ori: Your LinkedIn Network, Visualized and Kept Warm
 
 *Merged concept — combines the network-graph hackathon brief with the relationship-assistant/subscription brief into one product.*

@@ -109,45 +109,143 @@ After every session where the agent did something wrong:
 Boris Cherny (creator of Claude Code) keeps his team's file around 100 lines. Under 300 is a good ceiling. Over 500 and you are fighting your own config.
 
 ## 10. Project context
-Fill this in per project. Keep it specific. Delete sections that don't apply.
+
+### What Ori is
+Three mindmaps of your own network — **Business**, **Freunde**, **Familie** — switchable, each
+one a separate graph. A contact lives in exactly one network. You fill a network by hand or by
+Excel/CSV import, and you log interactions per contact (called, met, wrote, e-mailed, noted)
+so the app can show what has gone quiet.
+
+This is a fresh build. The older CRM codebase the concept docs mention ("Bifur") is not in
+this repo and was never available here — do not go looking for it.
+
+An assistant that helps sort and maintain the network comes later, and so do MCP connections
+to LinkedIn and other platforms that the user connects themselves. Neither is built now. The
+layering below is what keeps both cheap to add.
+
+**Ori never logs into LinkedIn, scrapes profiles, or sends a message on anyone's behalf.**
+Future platform connections go through MCP servers the user connects, and any message stays a
+draft the human sends. There is no send path and you do not build one.
+
+`docs/ARCHITECTURE-TARGET.md` is a product target doc that proposes a LinkedIn
+browser-automation MCP server and therefore contradicts the rule above and
+`docs/PROJECT.md` Key Decisions. The MVP is built to `docs/ARCHITECTURE.md`. Resolving that
+contradiction is an open team decision, tracked in `docs/TASKS.md`.
 
 ### Stack
-- Language and version: TBD — no code scaffolded yet. Planned: TypeScript (see docs/PROJECT.md Tech Stack)
-- Framework(s): Planned: Next.js 16 + Supabase (reused from the existing codebase, originally called Bifur) — not yet present in this folder
-- Package manager: TBD
-- Runtime / deployment target: TBD
+- Language and version: TypeScript 5
+- Framework(s): Next.js 16 (App Router, no `src/`), React 19, Tailwind CSS 4, Supabase (Postgres, Auth, RLS)
+- Package manager: npm
+- Runtime / deployment target: Node 24 locally; Vercel + hosted Supabase later. Nothing is deployed yet.
 
 ### Commands
-- Install: TODO
-- Build: TODO
-- Test (all): TODO
-- Test (single file): TODO
-- Lint: TODO
-- Typecheck: TODO
-- Run locally: TODO
+- Install: `npm install`
+- Local database: `supabase start` (needs OrbStack running), `supabase db reset` to replay migrations + seed
+- Build: `npm run build`
+- Test (all): `npm run check` — asserts in `lib/core/__checks__/run.ts`, no test framework
+- Lint: `npm run lint`
+- Typecheck: `npx tsc --noEmit`
+- Run locally: `npm run dev` → http://localhost:3000
 
-Prefer single-file or single-test runs during iteration. Full suites are for the final verification pass.
+Local Supabase: API `http://127.0.0.1:54321`, Studio `http://127.0.0.1:54323`, Mailpit
+(catches auth mails) `http://127.0.0.1:54324`. Seeded demo login: `demo@ori.local` / `demo12345`.
 
 ### Layout
-- Source lives in: not yet created — this folder currently holds planning docs only (`README.md`, `ori-project-idea.md`, `docs/`)
-- Tests live in: TODO
-- Do not modify: N/A yet
+```
+app/              pages and layout. No app/api/ yet — the assistant comes later
+components/       React components; there is no components/ui/ and no shadcn in this project
+lib/core/         ALL business logic, framework-free (imports nothing from next/*)
+lib/actions/      Server Actions — thin adapters only
+lib/supabase/     client / server / service-role factories
+supabase/         migrations, seed.sql, config.toml
+docs/             ARCHITECTURE.md, BUILD_PLAN.md, LOCAL_SETUP.md, PROJECT.md, PLAN.md, TASKS.md
+proxy.ts          Next.js 16 middleware successor: session refresh + /dashboard gate
+```
 
-### Conventions specific to this repo
-- Naming: TODO
-- Import style: TODO
-- Error handling pattern: TODO
-- Testing pattern and framework: TODO
+### Layering — the rule that keeps the codebase from splitting in two
+All business logic lives in `lib/core/`. Server Actions and route handlers are thin adapters
+that resolve auth and call into core.
+
+```
+UI ──► lib/actions/*.ts  (Server Actions) ──► lib/core/ ──► Supabase
+
+Later, an assistant route handler and an MCP endpoint become a second and third adapter over
+the same core, not a second copy of the logic.
+```
+
+An adapter contains auth context, argument validation, one call into core, `revalidatePath`.
+Nothing else. A `.from('contacts')` query inside `lib/actions/` belongs in `lib/core/`.
+There is no `app/api/` directory yet; do not add one without asking.
+
+### Graph model — read this before writing any graph code
+Do **not** connect people to people. 200 contacts sharing a city is 19,900 edges on its own.
+
+Use a **bipartite graph**: nodes are either a person or an attribute (company, role, city,
+relation, tag). Every person links only to their own attribute nodes. The force layout then
+produces the clusters we want with attribute nodes as visible hubs. The same code serves all
+three networks — Business fills company and role, Familie fills relation — so there is no
+per-network branch.
+
+Consequence: **there is no edge table.** Edges are derived deterministically from contact
+attributes, in the browser, at render time. Nothing to store, sync or invalidate.
+
+"Last contacted" is likewise not a column: it is `max(occurred_on)` over `interactions`,
+computed in `lib/core/read.ts`.
+
+### Design system
+Defined in `app/globals.css`. Do not invent new colors.
+
+```
+--background       #050505
+--card             #0A0A0A
+--secondary        #111111
+--muted            #171717
+--border           #232323
+--foreground       #F2F2F2
+--muted-foreground #7A7A7A
+```
+
+Semantic, used sparingly and only for meaning: `#22C55E` green (confidence, verified),
+`#EAB308` amber (caution, medium), `#D92D20` red (alert, high, destructive).
+
+- Inter for headlines and body, JetBrains Mono for labels, badges, timestamps, counts.
+- Labels are uppercase mono, 11px, letter-spacing 0.1em — the `.label-mono` class.
+- Panels use `.panel`: 1px borders, `border-radius: 0.375rem`, flat, no shadows, no blur, no gradients.
+- Generous negative space. Depth comes from layering and borders, never from shadow.
+- Motion is restrained: border-color and opacity transitions around 0.15s. Nothing bouncy.
+
+The feeling is a command center or intelligence terminal: dark, precise, technical, a little
+classified. Not a consumer app, not a startup landing page.
+
+UI copy is German. Code, comments, commit messages and these docs are English.
+
+### Simplicity is the requirement, not a preference
+- No job queue, no Redis, no caching layer, no state management library.
+- No new dependencies unless there is no reasonable alternative. The stack is fixed.
+- No edge table in the database. See "Graph model".
+- No tests beyond what is needed to trust the import, the graph build and the filter math.
+- If a task starts growing a second abstraction layer, stop and ask.
+
+### Ownership (see docs/BUILD_PLAN.md "Coordination")
+- Only db-agent writes `supabase/migrations/`. If another agent needs a column, it asks.
+- Only core-agent writes inside `lib/core/`.
+- ui-agent never queries Supabase directly. It calls Server Actions.
+- Shared types live in `lib/core/types.ts` and change by agreement, not unilaterally.
 
 ### Forbidden
-- Never build any feature that logs into LinkedIn, scrapes LinkedIn profiles, or sends a LinkedIn message without the user manually doing it themselves. This looks like a reasonable automation shortcut but violates LinkedIn's ToS and risks getting users' accounts banned — see the Key Decisions table in `docs/PROJECT.md`.
+- Never build any feature that logs into LinkedIn, scrapes LinkedIn profiles, or sends a
+  LinkedIn message without the user manually doing it themselves. This looks like a
+  reasonable automation shortcut but violates LinkedIn's ToS and risks getting users'
+  accounts banned — see the Key Decisions table in `docs/PROJECT.md`.
 
 ## 11. Project Learnings
 Accumulated corrections. This section is for the agent to maintain, not just the human.
 
 When the user corrects your approach, append a one-line rule here before ending the session. Write it concretely ("Always use X for Y"), never abstractly ("be careful with Y"). If an existing line already covers the correction, tighten it instead of adding a new one. Remove lines when the underlying issue goes away (model upgrades, refactors, process changes).
 
-(empty)
+- The docs say Ori extends an existing CRM codebase ("Bifur"). That codebase is not in this repo and was not available on the machine the MVP was built on — the app here is greenfield Next.js 16. Do not go looking for it.
+- Next.js 16 renamed `middleware.ts` to `proxy.ts`. The session refresh and the `/dashboard` gate live in `proxy.ts` at the repo root.
+- There is no shadcn and no `components/ui/` in this project. The design system is hand-rolled CSS tokens in `app/globals.css`; write plain components against `.panel` and `.label-mono`.
 
 ## 12. How this file was built
 This boilerplate synthesizes:

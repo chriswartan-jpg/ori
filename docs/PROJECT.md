@@ -1,5 +1,5 @@
 ---
-description: "The graph view for your LinkedIn network, with an AI assistant that finds the right people and drafts outreach to keep relationships warm — without ever automating LinkedIn itself."
+description: "Three switchable mindmaps of your own network — business, friends, family — that you fill yourself, with an interaction log that shows which relationships have gone quiet."
 type: Project
 about: "ori"
 ---
@@ -8,63 +8,77 @@ about: "ori"
 
 ## What This Is
 
-A web app that turns a LinkedIn connections export into an interactive, filterable graph of your professional network, with an AI assistant that can query the graph, surface who's worth talking to, and draft outreach and follow-up messages for relationships that have gone quiet. Paired with an MCP server so any AI client — not just the in-app assistant — can query and act on the network the same way.
+A web app that turns your own network into three switchable, filterable graphs — **Business**,
+**Freunde**, **Familie**. You fill each one yourself, by hand or by Excel/CSV import, and log
+interactions per contact (called, met, wrote, e-mailed, noted) so the app can surface which
+relationships have gone quiet.
+
+Planned but not built in the MVP: an assistant that helps sort and maintain the network, and
+MCP connections so the user can attach LinkedIn and other platforms themselves.
 
 ## Core Value
 
-People with large LinkedIn networks can't see who they know or remember who's gone cold. Ori turns the flat connections list into a graph you can explore and an assistant that helps you act on it, without ever risking a LinkedIn ban by automating sends.
+People cannot see their own network. A contact list is alphabetical, which is the one order
+that tells you nothing — not who you know where, not who does what, not who you have not
+spoken to in a year. Ori turns the list into a graph you can explore and a log that remembers
+for you, across all three parts of a life rather than only the professional one.
 
 ## Current State
 
 | Attribute | Value |
 |-----------|-------|
 | Type | Application |
-| Version | 0.0 (concept) |
-| Status | Prototype — idea/planning stage, no code written yet |
+| Version | 0.1 (MVP in progress) |
+| Status | Prototype — MVP being built, runs locally only |
 | Last Updated | 2026-09-21 |
 
-No Production URLs yet — nothing deployed.
+No Production URLs yet — nothing deployed. Local only: Next.js on :3000, Supabase on :54321.
 
 ## Requirements
 
 ### Core Features
 
-- Import a LinkedIn connections CSV export and normalize it into contacts
-- Render the network as an interactive, force-directed graph clustered by company, role, industry, city
-- Live filters that re-lay out the graph (city, role, industry, company, seniority, connection date)
-- Chat assistant that queries and drives the graph view ("who could help me with X in Y")
-- Relationship-health tracking: flag contacts gone quiet, draft follow-ups, suggest timing — user always sends manually
-- MCP server exposing the same capabilities to external AI clients
+- Three networks — business, friends, family — switchable, each rendered as its own graph
+- Create, edit and delete contacts by hand, per network
+- Excel/CSV import with header auto-detection, preview and explicit confirm
+- Interaction log per contact: kind, date, note; "last contacted" derived from it
+- Force-directed graph clustered by company, role, city, relation and tags
+- Live filters that hide nodes without re-laying out the graph, plus a "gone quiet" filter
+- A keyboard-accessible contact list as an equal alternative to the canvas
 
 ### Validated (Shipped)
 
-None yet — implementation hasn't started.
+None yet — the MVP has not been through a real user run.
 
 ### Active (In Progress)
 
-None yet.
+- Ori MVP: schema + RLS + seed, core modules, and the three mindmaps with import and interaction log
 
 ### Planned (Next)
 
-- [ ] CSV import + role-family enrichment (LLM classification pass)
-- [ ] Graph rendering with clustering + filters
-- [ ] Chat assistant (`search_network`, `get_clusters`, `set_filter`)
-- [ ] Message drafting + no-reply tracking + reminders
+- [ ] Assistant that helps sort, tag and maintain the network, and suggests who to contact
+- [ ] MCP connections the user attaches themselves (LinkedIn and other platforms)
+- [ ] Follow-up reminders and timing suggestions
 - [ ] Stripe subscription checkout + onboarding
 
 ### Out of Scope
 
-- Automated LinkedIn login, scraping, or auto-sending messages — violates LinkedIn's ToS and risks account bans; every send stays a manual, user-approved action
-- Friends & family networks — professional-only for v1; the data model allows the expansion later, it's just not built now
-- Full social-graph edges (mutual connections) — not available from the LinkedIn export; edges are attribute-derived only
+- Automated LinkedIn login, scraping, or auto-sending messages — violates LinkedIn's ToS and
+  risks account bans; every send stays a manual, user-approved action
+- A separate data model per network — one `contacts` table with a `network` column and one
+  bipartite graph builder serves all three
+- Full social-graph edges (mutual connections) — no data source for them; edges are
+  attribute-derived only
+- A denormalized "last contacted" column — derived from the interaction log instead
 
 ## Target Users
 
-**Primary:** People with large, under-used LinkedIn networks who want to actually use them
-- Job seekers keeping recruiters and hiring managers warm
+**Primary:** People whose network is large enough that they lose track of it
 - Founders & freelancers staying top-of-mind with clients and partners
+- Job seekers keeping recruiters and hiring managers warm
 
-**Secondary:** Students & recent grads nurturing contacts from events, associations, internships
+**Secondary:** Anyone who wants one place for professional and private contacts and keeps
+forgetting when they last called their aunt
 
 ## Context
 
@@ -72,29 +86,34 @@ None yet.
 Positioned as a subscription product (~€5.99/month) aimed at individuals rather than sales teams — existing CRMs solve this shape of problem only for sales orgs, not personal networking.
 
 **Technical Context:**
-Builds on an existing codebase (originally built under the name Bifur; Next.js 16 + Supabase with auth/RLS, a `contacts` table, a groups system, an import pipeline) rather than starting from zero. LinkedIn has no API for a user's own connections, so the only compliant data source is LinkedIn's own user-initiated data export (CSV).
+A fresh Next.js 16 + Supabase build. An earlier codebase (originally called Bifur) inspired the
+concept but is not part of this repo and was not available when the MVP was built, so the
+schema was written from scratch — two tables, `contacts` and `interactions`. Data enters via
+the contact form and a spreadsheet import; platform connections are deferred to user-attached
+MCP servers rather than any direct LinkedIn integration.
 
 ```
-   LinkedIn            CSV           Ori app                    MCP clients
- "Get your data" --->  export  --->  (Next.js + Supabase)  <--->  (Claude, etc.)
-                                          |          |
-                                          v          v
-                                     graph view   chat / assistant
-                                    (force-graph)  (drafts messages,
-                                                     never sends them)
-                                          |
-                                          v
-                                  contact / cluster / message-draft
-                                     tables (Supabase, RLS)
+  contact form  ─┐
+                 ├─►  Ori app  ──►  contacts + interactions
+  .xlsx / .csv  ─┘  (Next.js +      (Supabase, RLS per user)
+   (browser-side     Supabase)              │
+    parse, preview)       │                 ▼
+                          ▼        three mindmaps: business / friends / family
+                  interaction log   (bipartite graph, edges derived at render time)
+
+  deferred:  assistant (sort, tag, suggest who to contact)
+             MCP — Ori as a server, and platform MCP servers the user attaches
 ```
 
 ## Constraints
 
 ### Technical Constraints
 
-- No official LinkedIn API for a user's own connection list — the CSV export is the only legitimate ingestion path
-- City and industry are not present in the export and must be inferred or manually tagged
-- No mutual-connection data — graph edges must be attribute-derived, not social
+- No platform API gives a user their own contact list, so the user supplies the data: contact
+  form or spreadsheet import. Platform connections later go through user-attached MCP servers.
+- No mutual-connection data from anywhere — graph edges must be attribute-derived, not social
+- Family reads more like a tree than a cluster graph; the MVP models it with `relation`
+  attribute nodes and no special case, to be revisited against real data
 - Graph rendering (`react-force-graph-2d` / `d3-force` on canvas) comfortably handles up to a couple thousand nodes; beyond that would need WebGL
 
 ### Business Constraints
@@ -112,10 +131,12 @@ Builds on an existing codebase (originally built under the name Bifur; Next.js 1
 | Decision | Rationale | Date | Status |
 |----------|-----------|------|--------|
 | Messaging is draft-only, human-in-the-loop — no auto-send | Automated LinkedIn messaging violates ToS and risks user account bans; this was the single biggest risk in the original messaging-assistant concept | 2026-09-21 | Active |
-| Graph edges are attribute-derived (company/role/industry/city), not social | LinkedIn's export has no mutual-connection data; attribute edges also make clusters more readable than a real social graph would | 2026-09-21 | Active |
-| Data source is LinkedIn's own user-initiated export only — no scraping, no unofficial API | Scraping violates ToS and risks account restriction; the export is the only clean, legitimate path | 2026-09-21 | Active |
-| Professional network only for v1, friends/family deferred | Ship one group well rather than three badly; the data model already allows the expansion later | 2026-09-21 | Active |
-| Build on the existing codebase (originally called Bifur; Next.js 16 + Supabase) rather than starting fresh | Reuses existing auth/RLS, contacts table, groups system, import pipeline, and dark design system | 2026-09-21 | Active |
+| Graph edges are attribute-derived (company/role/city/relation/tag), not social | There is no mutual-connection data source; attribute edges also make clusters more readable than a real social graph would | 2026-09-21 | Active |
+| The user supplies the data: contact form plus Excel/CSV import. Platform connections later go through MCP servers the user attaches themselves | No platform API gives a user their own contact list, and scraping violates ToS and risks account restriction | 2026-09-21 | Active |
+| Three networks from the start: business, friends, family | They are the same shape of problem, and one `network` column plus one graph builder covers all three — cheaper than shipping one and retrofitting two | 2026-09-21 | Active, supersedes "professional only for v1" |
+| Build fresh rather than extend the older codebase (originally called Bifur) | That codebase is not in this repo and was not available on the build machine; the schema and app were written from scratch, keeping only the design system from the concept docs | 2026-09-21 | Active, supersedes "build on the existing codebase" |
+| Assistant and MCP deferred out of the MVP | The value has to hold up without them: a network you cannot see is not fixed by a chat box on top of it. `lib/core/` is framework-free so both become adapters later, not rewrites | 2026-09-21 | Active |
+| Two tables, `contacts` and `interactions`. No groups, clusters or edge table | Edges are derived from attributes at render time and "last contacted" is `max(occurred_on)` — nothing to store, sync or invalidate | 2026-09-21 | Active |
 | Product name is Ori | Resolves the open naming question from the original concept doc | 2026-09-21 | Active |
 
 ## Success Metrics
@@ -124,29 +145,30 @@ Builds on an existing codebase (originally built under the name Bifur; Next.js 1
 |--------|--------|---------|--------|
 | Trial → paid conversion rate | TBD | — | — |
 | Monthly churn | TBD | — | — |
-| Drafts created + marked-sent + follow-ups completed per active user | TBD | — | — |
-| Reply rate on assisted messages (self-reported) | TBD | — | — |
+| Interactions logged + contacts revived per active user | TBD | — | — |
+| Reply rate on assisted messages (self-reported) | TBD | — | — (assistant not built) |
 | LLM + hosting cost per user vs. €5.99 revenue | Comfortably under €5.99 | — | — |
 
 ## Tech Stack / Tools
 
 | Layer | Technology | Notes |
 |-------|------------|-------|
-| Frontend | Next.js 16 | Reused from the existing codebase (originally called Bifur) |
-| Backend / DB | Supabase (Postgres + auth + RLS) | Reused from the existing codebase (originally called Bifur) |
+| Frontend | Next.js 16 (App Router), React 19, Tailwind CSS 4 | Fresh scaffold. No component library — the design system is hand-rolled CSS tokens |
+| Backend / DB | Supabase (Postgres + auth + RLS) | Two tables, RLS scoped by `user_id`. Runs locally in Docker via OrbStack |
 | Graph rendering | `react-force-graph-2d` / `d3-force` (canvas) | Handles up to ~2k nodes without WebGL |
-| Payments | Stripe | Subscriptions, ~€5.99/month |
-| AI / LLM | TBD provider | Role classification, message drafting, chat assistant |
-| Agent protocol | MCP (Model Context Protocol) | Lets external AI clients query/act on the network |
+| Spreadsheet import | `read-excel-file` (.xlsx), Papaparse (.csv) | Parsed in the browser. The `xlsx` package on npm is stuck at 0.18.5 with open advisories |
+| Payments | Stripe | Not built yet. Subscriptions, ~€5.99/month |
+| AI / LLM | TBD provider | Not built yet. Assistant for sorting, tagging and follow-up suggestions |
+| Agent protocol | MCP (Model Context Protocol) | Not built yet. Both directions: Ori as an MCP server, and user-attached platform MCP servers as a data source |
 
 ## Links
 
 | Resource | URL |
 |----------|-----|
-| Repository | TBD |
+| Repository | https://github.com/chriswartan-jpg/ori |
 | Production | TBD |
 | Documentation | See `README.md`, `docs/TASKS.md`, `docs/PLAN.md` in this folder |
 
 ---
 *PROJECT.md — Updated when requirements or context change*
-*Last updated: 2026-09-21*
+*Last updated: 2026-09-21 — rescoped from the LinkedIn-export concept to three self-filled networks*

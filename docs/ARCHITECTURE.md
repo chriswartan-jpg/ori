@@ -1,250 +1,181 @@
-# Architecture — Ori
+# Architecture — the MVP as built
 
-> Target architecture, written pre-implementation (no code exists in this repo yet — see `docs/PROJECT.md` for status). This describes the intended system so the team builds toward one shared design.
+> Scope note: Ori is a fresh build. It does not extend the older CRM codebase the concept
+> docs mention ("Bifur"); nothing of it is in this repo. `docs/ARCHITECTURE-TARGET.md` is a
+> product target doc that contradicts this one — see `docs/TASKS.md`.
 
-## 1. Introduction and Goals
+## 1. What the MVP does
 
-### 1.1 Requirements Overview
+Three mindmaps of your own network: **Business**, **Freunde**, **Familie**. You switch
+between them, and each one is a separate graph. A contact lives in exactly one network.
 
-Full requirements live in `docs/PROJECT.md`. Summary: Ori imports a user's LinkedIn connections export, renders it as a filterable graph, and gives the user an AI assistant that can query the network and draft outreach — sold as a ~€5.99/month subscription.
+You fill the network two ways: a contact form, or an Excel/CSV import. For each contact you
+log interactions — called, met, wrote, e-mailed, noted — with a date. The graph shows the
+clusters; the contact panel shows how long it has been quiet.
 
-### 1.2 Quality Goals
+An assistant that helps sort and maintain the network comes later, and so do MCP connections
+to LinkedIn and other platforms. Neither is built now. The layering in §4 is what keeps
+both cheap to add.
 
-| Priority | Quality Goal | Scenario |
-|---|---|---|
-| 1 | Cost efficiency | LLM + hosting cost per active user stays comfortably under €5.99/month revenue |
-| 2 | Usability | Graph re-layout on filter change feels instant (<300ms) for networks up to ~2k nodes |
-| 3 | Data safety | A user's LinkedIn/contact data is only ever readable by that user (Supabase RLS enforced on every table) |
-| 4 | Account safety | LinkedIn-facing actions must not get a user's account flagged or banned — see §11, this is currently **at risk**, not met |
-
-### 1.3 Stakeholders
-
-| Role | Expectations |
-|---|---|
-| Product owner (you) | A demoable MVP, then a sellable subscription product |
-| End users | Their own LinkedIn data stays private; the product doesn't get their account banned |
-| Collaborators (e.g. Waffelhaffel on GitHub) | A codebase they can build against once implementation starts |
-
-## 2. Architecture Constraints
-
-| Constraint | Negotiable? |
-|---|---|
-| Supabase for auth + database (reuses the existing Bifur-derived codebase) | Hard — already decided, see `docs/PROJECT.md` Key Decisions |
-| Vercel for hosting the Next.js app | Hard — stated stack choice |
-| Stripe for subscription payments | Hard — stated stack choice |
-| Local development stack before anything is deployed | Hard — build and run locally first |
-| LinkedIn network data enters only via CSV export or the chosen MCP server (see §4, §11) | Was hard (export-only); now under active reconsideration — flagged as a risk, not resolved |
-| Next.js 16 (existing codebase) | Hard |
-
-## 3. Context and Scope
-
-### 3.1 Business Context
-
-| External party | What Ori exchanges with them |
-|---|---|
-| End user | Uploads a LinkedIn CSV export; browses their graph; approves/sends drafted messages; pays a subscription |
-| LinkedIn | Source of the CSV export (compliant path) and, via the MCP server, of live profile/company/job/message data (non-compliant path, see §11) |
-| Stripe | Subscription checkout, billing, webhooks |
-| MCP clients (e.g. Claude Desktop) | Can call Ori's own MCP tools to query/drive the network, same as the in-app assistant |
-
-### 3.2 Technical Context
+## 2. Module map
 
 ```
-                    HTTPS                          HTTPS
-   Browser  <----------------->  Vercel (Next.js)  <----------------->  Supabase
-  (end user)                     - pages/API routes                    (Postgres, Auth, RLS)
-                                        |    ^
-                                stripe- |    | webhook
-                                checkout|    | (subscription status)
-                                        v    |
-                                     Stripe API
-                                        |
-                                        |  MCP (stdio/local process, NOT deployed on Vercel — see §7, §11)
-                                        v
-                          stickerdaniel/linkedin-mcp-server
-                          (Patchright/Chromium, logged into
-                           the user's own LinkedIn session)
-                                        |
-                                        v
-                                   linkedin.com
+lib/
+  core/                     all business logic, framework-free
+    types.ts                Network, Contact, Interaction, GraphContact, GraphNode, GraphFilter, daysSince
+    contacts.ts             contact reads and writes
+    interactions.ts         interaction log reads and writes
+    read.ts                 getGraphData(supabase, userId, network) -> GraphContact[]
+    import/
+      parse-spreadsheet.ts  .xlsx / .csv -> ContactInput[] + per-row problems
+      normalize.ts          company / name / url / phone cleanup
+      ingest.ts             insert a batch, dedupe, return counts
+    graph/
+      build.ts              GraphContact[] -> { nodes, edges } bipartite
+      filter.ts             pure visibility function over the graph
+    __checks__/run.ts       assert-based checks for the parser, build and filter
+
+  actions/                  Server Actions, thin adapters
+  supabase/                 client / server / service-role factories
+
+app/
+  login/                    sign in, sign up
+  dashboard/[network]/      the mindmap, filter bar, detail panel
+  dashboard/[network]/import/   spreadsheet import
+proxy.ts                    Next.js 16 middleware successor: session refresh + /dashboard gate
 ```
 
-## 4. Solution Strategy
+`lib/core/` imports nothing from `next/*`. That is what lets the same code serve a Server
+Action today and a chat route or MCP endpoint later without being rewritten.
 
-- **Frontend + API**: Next.js 16 on Vercel — reuses the existing (originally "Bifur") codebase rather than starting fresh. Serverless functions handle Stripe webhooks and any server-side logic.
-- **Data**: Supabase Postgres with Row Level Security, so every table (contacts, clusters, message drafts, users) is scoped to the owning user by default.
-- **Payments**: Stripe Checkout + webhooks update a `subscription_status` column in Supabase; feature gating reads that column.
-- **Network ingestion**: LinkedIn's own CSV export remains the bulk-import path — nothing else can legally list a user's full connections (see `docs/PROJECT.md` §Constraints).
-- **LinkedIn actions (profiles, companies, jobs, messages)**: the chosen tool is **stickerdaniel/linkedin-mcp-server** (3,563⭐, Apache 2.0, Python) — see §9 and §11 for why this is a live risk, not a settled decision.
-- **Local-first development**: build and run the whole stack locally (Next.js dev server + local/dev Supabase project) before anything touches Vercel or production Stripe/LinkedIn credentials.
+There is no `app/api/` directory yet. Add one only when the assistant arrives.
 
-## 5. Building Block View
+## 3. Schema
 
-### 5.1 Whitebox Overall System (Level 1)
+Two tables. No groups table, no clusters table, **no edge table** (see §6).
 
-```
-+-----------------------------------------------------------+
-|                     Ori (Next.js app)                      |
-|                                                              |
-|  +----------------+  +----------------+  +----------------+ |
-|  |  Graph View     |  |  Chat Assistant |  |  Billing/Auth   | |
-|  |  (force-graph)  |  |  (chat panel)   |  |  UI (Supabase)  | |
-|  +--------+--------+  +--------+--------+  +--------+--------+ |
-|           |                    |                    |          |
-|  +--------v--------------------v--------------------v--------+ |
-|  |                Next.js API routes / server actions          | |
-|  +----+------------------+------------------+------------------+ |
-|       |                  |                  |                    |
-+-------|------------------|------------------|--------------------+
-        v                  v                  v
-  +-----------+     +-------------+    +----------------+
-  |  Supabase |     |   Stripe    |    |  MCP client     |
-  | (Auth,DB) |     | (payments)  |    |  (calls the     |
-  +-----------+     +-------------+    |  LinkedIn MCP)   |
-                                        +--------+---------+
-                                                 |
-                                                 v
-                                  stickerdaniel/linkedin-mcp-server
-                                  (separate local process — see §7)
-```
+```sql
+create type network as enum ('business', 'friends', 'family');
+create type contact_source as enum ('manual', 'excel');
+create type interaction_kind as enum ('call', 'message', 'meeting', 'email', 'note');
 
-| Building Block | Responsibility |
-|---|---|
-| Graph View | Renders contacts as a force-directed graph, clustered by attribute, filterable live |
-| Chat Assistant | Chat UI that calls the same tools an external MCP client would (`search_network`, `set_filter`, `draft_message`, ...) |
-| Billing/Auth UI | Sign-up/login (Supabase Auth), subscription status, Stripe checkout entry point |
-| API routes / server actions | Next.js server-side logic: CSV import, enrichment trigger, Stripe webhook handler, MCP tool orchestration |
-| Supabase | Postgres (contacts, clusters, message drafts, users, subscription status) + Auth + Row Level Security |
-| Stripe | Subscription checkout and billing lifecycle |
-| MCP client / LinkedIn MCP | Wraps `stickerdaniel/linkedin-mcp-server` to fetch live profile/company/job/message data and (if enabled) send messages |
+create table contacts (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid not null references auth.users on delete cascade,
+  network      network not null,
+  first_name   text not null,
+  last_name    text not null default '',
+  email        text,
+  phone        text,
+  company      text,
+  company_norm text,                       -- derived in core, used for clustering
+  role         text,                       -- free-text job title
+  city         text,
+  relation     text,                       -- "Bruder", "Studium", "Kundin"
+  tags         text[] not null default '{}',
+  notes        text,
+  profile_url  text,
+  source       contact_source not null default 'manual',
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
+);
 
-#### 5.1.1 MCP Integration Layer
+-- Dedupe key for the importer. Only bites where an e-mail exists; the export often has none.
+create unique index contacts_user_network_email_idx
+  on contacts (user_id, network, lower(email))
+  where email is not null;
 
-- **Purpose:** the only building block that talks to LinkedIn directly (beyond the one-time CSV import). Everything else in Ori only ever reads Supabase.
-- **Interface(s):** MCP tool calls (stdio) to a running `linkedin-mcp-server` process: `get_person_profile`, `get_my_profile`, `search_people`, `get_company_profile`, `get_inbox`, `get_conversation`, `send_message`, `connect_with_person`, etc.
-- **Quality characteristic that matters here:** every write tool (`send_message`, `connect_with_person`) should be called only behind explicit user confirmation in the UI, to preserve as much of the original "human-in-the-loop" principle as this MCP choice still allows (see §11 — the read side already carries real risk, so writes need the tightest gate).
-- **Location:** not part of the Vercel deployment — see §7.
+create index contacts_user_network_idx on contacts (user_id, network);
 
-## 6. Runtime View
+create table interactions (
+  id          uuid primary key default gen_random_uuid(),
+  user_id     uuid not null references auth.users on delete cascade,
+  contact_id  uuid not null references contacts on delete cascade,
+  kind        interaction_kind not null,
+  occurred_on date not null,
+  note        text,
+  created_at  timestamptz not null default now()
+);
 
-### 6.1 CSV import → graph render (the compliant, low-risk path)
-
-```
-User -> Ori UI: upload connections.csv
-Ori UI -> API route: POST /api/import
-API route -> Supabase: insert/normalize rows into `contacts`
-API route -> LLM: batch-classify role_family per contact
-API route -> Supabase: write enriched contacts + clusters
-Ori UI <- Supabase: subscribe/query contacts+clusters
-Ori UI -> Graph View: render nodes/edges, ready to filter
+create index interactions_contact_idx on interactions (contact_id, occurred_on desc);
 ```
 
-### 6.2 Assistant looks up a live profile via the LinkedIn MCP (the risky path)
+RLS on both tables, `user_id = auth.uid()` for every operation. No table is readable across
+users. `interactions.user_id` is denormalized on purpose: it makes the RLS policy a column
+check instead of a subquery on every row.
+
+**"Last contacted" is not a column.** It is `max(occurred_on)` per contact, computed in
+`read.ts`. A denormalized column would need a trigger and could drift; the graph already
+loads every contact of one network in one pass, so there is nothing to optimize yet.
+
+## 4. Layering
 
 ```
-User -> Chat Assistant: "who is X, and where do they work now?"
-Chat Assistant -> API route: tool call get_person_profile(X)
-API route -> MCP client -> linkedin-mcp-server: get_person_profile
-linkedin-mcp-server -> linkedin.com: browser session request (as the user)
-linkedin.com -> linkedin-mcp-server: profile HTML/data
-linkedin-mcp-server -> API route -> Chat Assistant: structured profile data
-Chat Assistant -> User: answer
+UI ──► lib/actions/*.ts  (auth, Zod validation, one call into core, revalidatePath) ──► lib/core/ ──► Supabase
 ```
 
-Note the difference from 6.1: this path makes a real, live, authenticated request to linkedin.com on every call — that's the source of the risk discussed in §11.
+An adapter contains nothing else. A `.from('contacts')` query inside `lib/actions/` belongs
+in `lib/core/`. When the assistant arrives it becomes a second adapter over the same core,
+not a second copy of the logic.
 
-### 6.3 Subscription checkout
+## 5. Import pipeline
 
-```
-User -> Billing UI: click "Subscribe"
-Billing UI -> Stripe Checkout: redirect
-Stripe -> Ori webhook (API route): checkout.session.completed
-API route -> Supabase: set subscription_status = active for user
-Ori UI <- Supabase: unlock gated features
-```
+1. **Parse in the browser.** `read-excel-file` for `.xlsx`, Papaparse for `.csv`. The raw
+   file never goes to the server, which sidesteps Server Action body limits and renders the
+   preview instantly.
+   *Why not SheetJS:* the `xlsx` package on npm is stuck at 0.18.5 with open advisories; the
+   fixed build ships only from the vendor's own CDN. `read-excel-file` is maintained on npm.
+2. **Map headers by alias**, German and English: `Vorname/First Name`, `Nachname/Last Name`,
+   `E-Mail/Email`, `Telefon/Phone`, `Firma/Company`, `Rolle/Position/Titel`, `Stadt/Ort/City`,
+   `Beziehung/Relation`, `Tags`, `Notizen/Notes`. Unknown columns are ignored, not an error.
+3. If no name column is found, fail loudly and **name the headers that were found**. A silent
+   empty import is the worst outcome here. A downloadable CSV template is offered for exactly
+   this case, which is cheaper than a column-mapping UI.
+4. Normalize to `ContactInput`, show a preview table with per-row problems, user confirms.
+5. Send to the server in batches of 200 through a Server Action. Insert; skip rows whose
+   e-mail already exists in that network. Report inserted / updated / skipped.
 
-## 7. Deployment View
+## 6. Graph building
 
-### 7.1 Infrastructure Level 1
+`lib/core/graph/build.ts` turns one network's `GraphContact[]` into `{ nodes, edges }`.
 
-| Environment | Where it runs | Notes |
-|---|---|---|
-| Local dev | Next.js dev server + Supabase local/dev project, on the developer's machine | Build and verify everything here first |
-| Production — app | Vercel (Next.js, serverless functions) | Hosts Graph View, Chat Assistant UI, API routes, Stripe webhook handler |
-| Production — data | Supabase cloud project | Postgres + Auth + RLS |
-| Production — payments | Stripe | Hosted checkout + webhooks into Vercel |
-| LinkedIn MCP server | **Not Vercel** — a separate, persistent process holding a real logged-in browser session per user | See §11 — this is an open infrastructure problem, not a solved deployment target |
+Do **not** connect people to people. 200 contacts sharing a city is 19,900 edges on its own.
 
-### 7.2 Why the MCP server can't just live on Vercel
+**Bipartite:** nodes are either a person or an attribute. Every person links only to their
+own attribute nodes — company, role, city, relation, and one per tag. 800 people gives a few
+thousand edges, and the force layout produces the clusters we want with attribute nodes as
+visible hubs. The same code serves all three networks: Business fills company and role,
+Familie fills relation, and nothing needs a per-network branch.
 
-`stickerdaniel/linkedin-mcp-server` starts a real Chromium browser (via Patchright) tied to one LinkedIn login, and keeps a session profile on local disk (`~/.linkedin-mcp/profile`). Vercel serverless functions are stateless, short-lived, and can't persist a logged-in browser session or hold a Chromium binary across invocations. Concretely, this MCP server needs to run somewhere with:
+Consequence: **there is no edge table.** Edges are derived deterministically from contact
+attributes, in the browser, at render time. Nothing to store, sync or invalidate.
 
-- A persistent filesystem (for the browser profile / session cookies)
-- A long-lived process (not a function that spins down after each request)
-- One instance *per user* logged into *their own* LinkedIn account, isolated from every other user's session
+Rules:
+- One attribute node per distinct value. `null` produces no node — there is no "null" hub.
+- Attribute nodes with a single member are dropped. A hub of one is noise.
+- Companies are capped at the top 40 by member count, the tail buckets as "Other".
+- People with no attribute at all stay as isolated nodes. They are still contacts you own.
+- `build.ts` is pure and has no database access, so it is trivially testable. The checks live
+  here and nowhere else.
 
-That's a materially bigger and riskier piece of infrastructure than "add an MCP client call to a serverless function" — closer to running a fleet of per-user browser containers than a typical API integration. This needs its own deployment decision before it can go to production; it is not solved by putting it "on Vercel" alongside the rest of the app.
+Rendering uses `react-force-graph-2d` on canvas. Person nodes small and neutral, attribute
+nodes larger and labelled, quiet contacts marked with the amber token.
 
-## 8. Cross-cutting Concepts
+`filter.ts` returns **visibility**, never a new graph: filters hide nodes so the layout stays
+stable while the user explores. An attribute node is visible while at least one visible
+person hangs on it.
 
-### 8.1 Auth & multi-tenancy
+## 7. Explicitly not built
 
-Supabase Auth issues the session; every table carries a `user_id` and RLS policies scope all reads/writes to `auth.uid()`. No cross-user data access anywhere in the schema.
+No assistant, no chat route, no MCP server, no LinkedIn connection of any kind, no edge
+table, no groups table, no job queue, no pagination, no Stripe, no theme toggle, no
+denormalized "last contacted" column, no per-contact cadence target.
 
-### 8.2 Payments gating
+When the assistant arrives it gets a tool registry under `lib/core/tools/` and one route
+handler, both reading the same core modules. Nothing in this document has to change for that.
 
-`subscription_status` on the user row is the single source of truth for feature gating, kept in sync only via the Stripe webhook handler — never set directly from client code.
+## 8. The LinkedIn line
 
-### 8.3 LinkedIn compliance posture (see §11 for the open question)
-
-Two different risk profiles coexist in this design right now:
-- CSV import (§6.1): fully compliant, LinkedIn's own official export.
-- MCP-driven live actions (§6.2): browser automation against LinkedIn's real, private frontend — not compliant with LinkedIn's ToS. Write actions (`send_message`, `connect_with_person`) are the highest-risk operations and should stay behind explicit per-action user confirmation at minimum.
-
-### 8.4 Environments & secrets
-
-Local `.env.local` for dev keys (Supabase dev project, Stripe test keys); Vercel environment variables for production secrets. LinkedIn MCP credentials (browser session) never touch Vercel at all — see §7.2.
-
-## 9. Architecture Decisions
-
-| Decision | Rationale | Date | Status |
-|---|---|---|---|
-| Hosting: Vercel for the Next.js app | Stated stack choice; matches the existing (Bifur-derived) Next.js codebase | 2026-09-21 | Active |
-| Auth + DB: Supabase | Already the existing codebase's foundation (auth, RLS, contacts table) | 2026-09-21 | Active |
-| Payments: Stripe | Stated stack choice; matches the €5.99/month subscription model in `docs/PROJECT.md` | 2026-09-21 | Active |
-| Build and run locally before deploying anything | Explicit instruction — de-risks the LinkedIn MCP integration especially, since it needs a real local browser session to test | 2026-09-21 | Active |
-| LinkedIn live-action MCP: `stickerdaniel/linkedin-mcp-server` | Chosen for its maturity (3,563⭐, actively maintained, Apache 2.0) over the other candidates evaluated | 2026-09-21 | **Active, but conflicts with an earlier decision — see §11** |
-
-**This table intentionally does not silently overwrite** the `docs/PROJECT.md` Key Decisions rows "Messaging is draft-only, human-in-the-loop — no auto-send" and "Data source is LinkedIn's own user-initiated export only — no scraping, no unofficial API" (both dated 2026-09-21, status Active). Both files currently exist and disagree with each other. Resolving that is a decision for you to make explicitly, not something this document should paper over — see §11.
-
-## 10. Quality Requirements
-
-| Scenario | Stimulus | Response | Metric |
-|---|---|---|---|
-| Cost stays under budget | 1,000 active subscribers | LLM + hosting spend per user | Comfortably under €5.99/month per user (target from `docs/PROJECT.md`) |
-| Graph stays responsive | User applies a filter on a ~2k-node network | Graph re-lays out | Under 300ms, canvas rendering (`react-force-graph-2d`/`d3-force`), no WebGL needed |
-| RLS holds | Any authenticated user queries any table | Only their own rows return | 0 cross-user data leaks in testing |
-
-## 11. Risks and Technical Debt
-
-Ranked by severity:
-
-1. **Direct contradiction between two live decisions.** `docs/PROJECT.md` records "no scraping, no automation, human-in-the-loop only" as an *Active* Key Decision. This document now names `stickerdaniel/linkedin-mcp-server` — a scraper/browser-automation tool explicitly tagged `linkedin-profile-scraper` — as the chosen MCP for live LinkedIn actions. `AGENTS.md`'s "Forbidden" section still says "never build any feature that logs into LinkedIn, scrapes LinkedIn profiles, or sends a LinkedIn message without the user manually doing it themselves." **These three documents currently disagree.** Nothing has been built yet, so no harm has happened — but before implementation starts, you need to explicitly decide and then update whichever of these three is wrong, rather than leaving contradictory instructions for whoever (human or agent) builds this next.
-2. **Real account-ban risk if the MCP path ships as-is.** `stickerdaniel/linkedin-mcp-server` drives a real, logged-in browser session against linkedin.com. LinkedIn can and does detect and restrict automated browser sessions; this is independent of whether a human clicked "confirm" on each message.
-3. **Infrastructure mismatch, not just a compliance question.** As detailed in §7.2, this MCP server's design (one persistent local browser session per user) does not fit a Vercel serverless deployment at all. Even setting compliance aside, "MCP in order to get things done" needs its own hosting answer before it can reach production users.
-4. **Multi-tenant session management is unsolved.** If pursued, Ori would need to hold one live LinkedIn browser session per subscriber, securely isolated — a meaningfully larger and more sensitive piece of infrastructure than anything else in this stack (bigger blast radius than a leaked API key: a leaked/hijacked session is a user's actual LinkedIn account).
-5. **Possible mitigation, not yet decided:** restrict the MCP integration to its read-only tools (`get_person_profile`, `get_company_profile`, `search_people`, etc.) and never wire up `send_message` / `connect_with_person`, keeping at least the "never auto-send" half of the original decision intact. This is a real option, not yet chosen — flagging it here so it's a deliberate choice, not a default.
-
-## 12. Glossary
-
-| Term | Definition |
-|---|---|
-| MCP | Model Context Protocol — the protocol Ori's assistant and external AI clients use to call structured tools |
-| RLS | Row Level Security — Postgres/Supabase feature restricting each row to its owning user |
-| Patchright | A stealth-mode wrapper around Playwright/Chromium, used by `stickerdaniel/linkedin-mcp-server` to avoid basic bot detection |
-| Voyager | LinkedIn's own private/internal web API, which browser-automation MCP servers reverse-engineer or drive indirectly |
-| Attribute-derived edges | Graph edges based on shared company/role/industry/city, not real social/mutual-connection data (which LinkedIn's export doesn't provide) |
-
----
-*ARCHITECTURE.md — describes the target system; update when the solution strategy, building blocks, or major risks actually change.*
-*Last updated: 2026-09-21*
+Ori never logs into LinkedIn, scrapes profiles, or sends a message on anyone's behalf. Future
+platform connections go through MCP servers the **user** connects, and any message stays a
+draft the human sends. This is a product rule, not an implementation detail.
