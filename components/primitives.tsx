@@ -1,17 +1,18 @@
 /**
- * The few shared bits of styling. app/globals.css is frozen, so these are Tailwind class
- * strings against the design tokens rather than new CSS.
+ * The few shared bits of styling, as Tailwind class strings against the tokens in
+ * app/globals.css. Buttons are pills; inputs have 10px corners; only the boundary of
+ * something you can operate uses --border-strong.
  */
 import type { ReactNode } from "react";
 
 export const BTN =
-  "rounded-md border border-border px-3 py-2 text-sm text-foreground hover:border-muted-foreground disabled:opacity-50";
+  "inline-flex items-center rounded-full border border-border-strong px-4 py-2 text-sm font-medium text-foreground hover:border-foreground disabled:opacity-50";
 
 export const BTN_QUIET =
-  "rounded-md border border-transparent px-3 py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50";
+  "inline-flex items-center rounded-full border border-transparent px-3 py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50";
 
 export const BTN_DANGER =
-  "rounded-md border border-border px-3 py-2 text-sm text-alert hover:border-alert disabled:opacity-50";
+  "inline-flex items-center rounded-full border border-border-strong px-4 py-2 text-sm font-medium text-alert hover:border-alert disabled:opacity-50";
 
 export const INPUT = "w-full px-3 py-2 text-sm";
 

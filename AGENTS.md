@@ -110,133 +110,178 @@ Boris Cherny (creator of Claude Code) keeps his team's file around 100 lines. Un
 
 ## 10. Project context
 
+### THIS IS A HACKATHON BUILD — READ BEFORE EVERY TASK
+Ori is being built for an **SBE business hackathon**. That changes what "good" means here,
+and it applies to every prompt, not just the ones that mention it:
+
+- **Judge every change against a specific problem it solves.** Before building, name the
+  pain in one sentence ("a salesperson cannot see which accounts have gone cold"). If a
+  change does not trace to a nameable problem, it does not earn its place in the demo.
+- **The demo is the deliverable.** Something that is visible and legible in two minutes
+  beats something technically superior that shows nothing. Empty states, seeded data and
+  first-paint legibility are features, not polish.
+- **The customer is no longer only the solo operator.** The original brief was one
+  businessman with a lot of contacts. We are deliberately widening towards something a
+  **company or team** would adopt — shared accounts, handover when someone leaves, who
+  owns which relationship, which accounts are going cold. Pivoting in that direction is
+  encouraged; say so when a change opens or closes that door.
+- **Ask questions.** When a request could serve either the solo user or the team buyer,
+  ask which. The positioning is still being decided and is worth a sentence of discussion.
+- **Do not oversell.** No invented traction, no fake integrations, no UI that implies a
+  capability that is not built. A demo that lies loses the room.
+
 ### What Ori is
-Three mindmaps of your own network — **Business**, **Freunde**, **Familie** — switchable, each
-one a separate graph. A contact lives in exactly one network. You fill a network by hand or by
-Excel/CSV import, and you log interactions per contact (called, met, wrote, e-mailed, noted)
-so the app can show what has gone quiet.
+**One mindmap of your whole network.** Contacts used to be split into three networks
+(business / friends / family); they are now a single network called **Connections**,
+because a colleague who became a friend is one person, not two rows. The graph clusters by
+company, role, city, relation and tag, and every contact carries an interaction log
+(called, met, wrote, e-mailed, noted) so the app can surface what has gone quiet.
+
+You fill it by hand or by Excel/CSV import. There is no sign-up and no server.
 
 This is a fresh build. The older CRM codebase the concept docs mention ("Bifur") is not in
 this repo and was never available here — do not go looking for it.
 
-An assistant that helps sort and maintain the network comes later, and so do MCP connections
-to LinkedIn and other platforms that the user connects themselves. Neither is built now. The
-layering below is what keeps both cheap to add.
-
 **Ori never logs into LinkedIn, scrapes profiles, or sends a message on anyone's behalf.**
-Future platform connections go through MCP servers the user connects, and any message stays a
-draft the human sends. There is no send path and you do not build one.
+There is no send path and you do not build one.
 
-`docs/ARCHITECTURE-TARGET.md` is a product target doc that proposes a LinkedIn
-browser-automation MCP server and therefore contradicts the rule above and
-`docs/PROJECT.md` Key Decisions. The MVP is built to `docs/ARCHITECTURE.md`. Resolving that
-contradiction is an open team decision, tracked in `docs/TASKS.md`.
+`docs/ARCHITECTURE-TARGET.md` is an older product target doc that proposes LinkedIn
+browser automation and therefore contradicts the rule above. The MVP is built to
+`docs/ARCHITECTURE.md`.
+
+### No backend. This is a deliberate constraint, not a gap
+There is no database, no auth, no server actions and no API routes. The whole app runs in
+the browser and persists to `localStorage`. Consequences you must respect:
+
+- Data is **per browser, per device**. It is not shared, not backed up, and clearing site
+  data deletes it. The UI says so; never imply otherwise.
+- **Anything genuinely multi-user is not buildable as-is.** Crowdsourced or shared contact
+  data can only be *represented* (a badge saying a field came from a crowdsourced source),
+  never actually exchanged between people. Do not fake a network call.
+- Adding a backend back is a product decision, not an implementation detail. Ask first.
 
 ### Stack
 - Language and version: TypeScript 5
-- Framework(s): Next.js 16 (App Router, no `src/`), React 19, Tailwind CSS 4, Supabase (Postgres, Auth, RLS)
+- Framework(s): Next.js 16 (App Router, no `src/`), React 19, Tailwind CSS 4
+- State: one module store (`lib/store/`) read through `useSyncExternalStore`. No Redux,
+  no Zustand, no context provider.
 - Package manager: npm
-- Runtime / deployment target: Node 24 locally; Vercel + hosted Supabase later. Nothing is deployed yet.
+- Runtime: Node 24+. Nothing is deployed.
 
 ### Commands
 - Install: `npm install`
-- Local database: `supabase start` (needs OrbStack running), `supabase db reset` to replay migrations + seed
-- Build: `npm run build`
+- Build: `npm run build` — must pass with zero type errors
 - Test (all): `npm run check` — asserts in `lib/core/__checks__/run.ts`, no test framework
-- Lint: `npm run lint`
-- Typecheck: `npx tsc --noEmit`
-- Run locally: `npm run dev` → http://localhost:3000
+- Lint: `npm run lint` — must be clean; it catches real React mistakes (setState in an effect)
+- Run locally: `npm run dev` → http://localhost:3000 (redirects to `/dashboard/connections`)
 
-Local Supabase: API `http://127.0.0.1:54321`, Studio `http://127.0.0.1:54323`, Mailpit
-(catches auth mails) `http://127.0.0.1:54324`. Seeded demo login: `demo@ori.local` / `demo12345`.
+There is nothing to start first: no Docker, no Supabase CLI, no `.env`. `npm install &&
+npm run dev` is the entire setup.
 
 ### Layout
 ```
-app/              pages and layout. No app/api/ yet — the assistant comes later
-components/       React components; there is no components/ui/ and no shadcn in this project
-lib/core/         ALL business logic, framework-free (imports nothing from next/*)
-lib/actions/      Server Actions — thin adapters only
-lib/supabase/     client / server / service-role factories
-supabase/         migrations, seed.sql, config.toml
-docs/             ARCHITECTURE.md, BUILD_PLAN.md, LOCAL_SETUP.md, PROJECT.md, PLAN.md, TASKS.md
-proxy.ts          Next.js 16 middleware successor: session refresh + /dashboard gate
+app/              pages and layout (one dashboard route per network segment, plus import)
+components/       React components; there is no components/ui/ and no shadcn here
+lib/core/         ALL business logic, framework-free and pure (imports nothing from next/*)
+lib/store/        the localStorage-backed store, the demo seed, and the React binding
+docs/             ARCHITECTURE.md, BUILD_PLAN.md, PROJECT.md, PLAN.md, TASKS.md
 ```
 
 ### Layering — the rule that keeps the codebase from splitting in two
-All business logic lives in `lib/core/`. Server Actions and route handlers are thin adapters
-that resolve auth and call into core.
+All business logic lives in `lib/core/`, and it is **pure**: every function takes a
+`Dataset` and returns a value or a new `Dataset`. It never touches `localStorage`,
+`window` or React.
 
 ```
-UI ──► lib/actions/*.ts  (Server Actions) ──► lib/core/ ──► Supabase
-
-Later, an assistant route handler and an MCP endpoint become a second and third adapter over
-the same core, not a second copy of the logic.
+UI ──► lib/store/ (state + persistence) ──► lib/core/ (pure logic) ──► Dataset
 ```
 
-An adapter contains auth context, argument validation, one call into core, `revalidatePath`.
-Nothing else. A `.from('contacts')` query inside `lib/actions/` belongs in `lib/core/`.
-There is no `app/api/` directory yet; do not add one without asking.
+`lib/store/` is the only place that may touch `localStorage`. A component must not read or
+write storage directly, and `lib/core/` must not know storage exists. This is what keeps
+the logic testable without a browser — `npm run check` runs it all in Node.
 
 ### Graph model — read this before writing any graph code
-Do **not** connect people to people. 200 contacts sharing a city is 19,900 edges on its own.
+Do **not** connect people to people. 125 contacts sharing a city is thousands of edges.
 
 Use a **bipartite graph**: nodes are either a person or an attribute (company, role, city,
-relation, tag). Every person links only to their own attribute nodes. The force layout then
-produces the clusters we want with attribute nodes as visible hubs. The same code serves all
-three networks — Business fills company and role, Familie fills relation — so there is no
-per-network branch.
+relation, tag). Every person links only to their own attribute nodes, and the force layout
+turns attribute nodes into visible hubs.
 
 Consequence: **there is no edge table.** Edges are derived deterministically from contact
 attributes, in the browser, at render time. Nothing to store, sync or invalidate.
 
-"Last contacted" is likewise not a column: it is `max(occurred_on)` over `interactions`,
+"Last contacted" is likewise not stored: it is `max(occurred_on)` over the interaction log,
 computed in `lib/core/read.ts`.
 
-### Design system
-Defined in `app/globals.css`. Do not invent new colors.
+**First paint must not be the whole graph.** 125 people plus their hubs is an unreadable
+hairball — this was tried and rejected. The graph opens on clusters only and expands one
+cluster at a time.
+
+### Design system — "Signal"
+Defined in `app/globals.css`: tokens in `:root`, exposed as utilities through `@theme
+inline`. Both halves, every time — a token that is not mapped cannot be used as
+`text-*`/`bg-*`/`border-*`. Do not invent new colors.
 
 ```
---background       #050505
---card             #0A0A0A
---secondary        #111111
---muted            #171717
---border           #232323
---foreground       #F2F2F2
---muted-foreground #7A7A7A
+--background       #0A0A0B   page
+--card             #121214   .panel fill
+--secondary        #18181B   inputs, selected list row, hover fill
+--muted            #202024   scrollbar, ::selection
+--border           #33333A   hairline dividers and panel edges (decorative, ~1.5:1)
+--border-strong    #64646E   boundary of anything operable: inputs, buttons, tags (≥ 3:1)
+--foreground       #FFFFFF
+--muted-foreground #9A9AA3   ≥ 6.3:1 on every surface
 ```
 
-Semantic, used sparingly and only for meaning: `#22C55E` green (confidence, verified),
-`#EAB308` amber (caution, medium), `#D92D20` red (alert, high, destructive).
+Semantic — meaning, never decoration:
+- `--caution #FFB020` amber means exactly one thing: **this relationship has gone quiet**
+  (`QUIET_AFTER_DAYS`), plus the crowdsourced warning. Never use it for focus, accents or
+  primary buttons; the quiet signal must stay the brightest thing on the screen.
+- `--alert #FF4D4D` destructive and errors. `--confidence #22C55E` verified.
+- One hue per cluster dimension, used for hub rings and labels on the canvas and for the
+  dots beside "Cluster by" in the rail — the two must match: `--hub-company #6EA8FE`,
+  `--hub-role #C084FC`, `--hub-city #2DD4BF`, `--hub-relation #F472B6`, `--hub-tag #A3E635`.
+- Canvas-only: `--graph-person #5B5B63` (a looked-after person is deliberately dim),
+  `--graph-edge #22222A`, `--graph-edge-active #64646E` (edges of the selected person).
 
-- Inter for headlines and body, JetBrains Mono for labels, badges, timestamps, counts.
-- Labels are uppercase mono, 11px, letter-spacing 0.1em — the `.label-mono` class.
-- Panels use `.panel`: 1px borders, `border-radius: 0.375rem`, flat, no shadows, no blur, no gradients.
-- Generous negative space. Depth comes from layering and borders, never from shadow.
-- Motion is restrained: border-color and opacity transitions around 0.15s. Nothing bouncy.
+Type: Space Grotesk (`--font-space-grotesk`) for everything, 14px body, headings 22–28px
+weight 600 letter-spacing -0.03em. JetBrains Mono for `.label-mono` (11px uppercase,
+letter-spacing 0.08em), counts, dates and the `42d` counters. Headline numbers use `.stat`
+(`<b>` at 20px/600 plus a mono caption); `.stat-quiet` turns it amber.
 
-The feeling is a command center or intelligence terminal: dark, precise, technical, a little
-classified. Not a consumer app, not a startup landing page.
+Shape and depth: `.panel` is `--card` with a 1px `--border` and 14px corners
+(`--radius-panel`); inputs use 10px (`--radius-control`); buttons and tags are pills. Flat —
+no shadow, no blur, no gradient in the DOM; depth comes from surface steps. The only
+gradient anywhere is the radial halo behind a quiet node on the canvas.
 
-UI copy is German. Code, comments, commit messages and these docs are English.
+Motion: colour and border 150ms ease; transform 180ms `cubic-bezier(.3,1.4,.5,1)`.
+Focus is a 2px `--foreground` outline, offset 2px.
+
+The canvas (`components/graph-canvas.tsx`) cannot be styled with CSS; it reads these tokens
+once via `getComputedStyle` in `tokens()`. Person: 3.2px dim dot; quiet: 3.8px amber dot with
+an 11px amber halo; selected: 4.5px white dot with a 1.5px white ring; hover: white. Hub:
+`--background` fill with a 1.5px ring and an uppercase mono label in the dimension's hue.
+Person labels draw when selected, hovered or above zoom 2.2.
+
+Controls stay out of the way: filters live in the 200px side rail, the graph gets the space.
+The feeling is a signal board: black, big numbers, one loud colour that means something.
+Not a terminal, not a consumer app.
+
+**All UI copy is English.** Code, comments, commit messages and these docs are English too.
 
 ### Simplicity is the requirement, not a preference
 - No job queue, no Redis, no caching layer, no state management library.
-- No new dependencies unless there is no reasonable alternative. The stack is fixed.
-- No edge table in the database. See "Graph model".
-- No tests beyond what is needed to trust the import, the graph build and the filter math.
+- No new dependencies unless there is no reasonable alternative.
+- No tests beyond what is needed to trust the import, the graph build, the filter math and
+  the dataset layer that replaced the database.
 - If a task starts growing a second abstraction layer, stop and ask.
-
-### Ownership (see docs/BUILD_PLAN.md "Coordination")
-- Only db-agent writes `supabase/migrations/`. If another agent needs a column, it asks.
-- Only core-agent writes inside `lib/core/`.
-- ui-agent never queries Supabase directly. It calls Server Actions.
-- Shared types live in `lib/core/types.ts` and change by agreement, not unilaterally.
 
 ### Forbidden
 - Never build any feature that logs into LinkedIn, scrapes LinkedIn profiles, or sends a
-  LinkedIn message without the user manually doing it themselves. This looks like a
-  reasonable automation shortcut but violates LinkedIn's ToS and risks getting users'
-  accounts banned — see the Key Decisions table in `docs/PROJECT.md`.
+  message on the user's behalf. This looks like a reasonable automation shortcut but
+  violates the platform ToS and risks getting users' accounts banned — see the Key
+  Decisions table in `docs/PROJECT.md`.
+- Never present crowdsourced or third-party data as verified. It gets a visible caution.
 
 ## 11. Project Learnings
 Accumulated corrections. This section is for the agent to maintain, not just the human.
@@ -244,8 +289,12 @@ Accumulated corrections. This section is for the agent to maintain, not just the
 When the user corrects your approach, append a one-line rule here before ending the session. Write it concretely ("Always use X for Y"), never abstractly ("be careful with Y"). If an existing line already covers the correction, tighten it instead of adding a new one. Remove lines when the underlying issue goes away (model upgrades, refactors, process changes).
 
 - The docs say Ori extends an existing CRM codebase ("Bifur"). That codebase is not in this repo and was not available on the machine the MVP was built on — the app here is greenfield Next.js 16. Do not go looking for it.
-- Next.js 16 renamed `middleware.ts` to `proxy.ts`. The session refresh and the `/dashboard` gate live in `proxy.ts` at the repo root.
 - There is no shadcn and no `components/ui/` in this project. The design system is hand-rolled CSS tokens in `app/globals.css`; write plain components against `.panel` and `.label-mono`.
+- The backend was removed on purpose (was Supabase + `proxy.ts` + `lib/actions/`). Do not reintroduce a database, auth or a server action without asking — see "No backend" in section 10.
+- Never call `setState` synchronously inside a `useEffect` body; `npm run lint` fails on it. To read an external source like `localStorage` on mount, use `useSyncExternalStore` — `lib/store/use-store.ts` is the pattern.
+- Bump the `KEY` suffix in `lib/store/storage.ts` whenever the stored shape changes incompatibly. The three-networks-to-one merge silently emptied every existing browser until the key went to v2.
+- When generating seed data from a running index, check the moduli are coprime with the field cycles. Keying the quiet/active split on `i % 5` while the city list had 5 entries made "London" mean "never contacted" across the whole demo.
+- Do not put UI copy in German. All user-facing text is English; the importer still accepts German spreadsheet *headers* on purpose, which is input tolerance, not UI language.
 
 ## 12. How this file was built
 This boilerplate synthesizes:
@@ -257,3 +306,13 @@ This boilerplate synthesizes:
 - The AGENTS.md open standard (cross-tool portability via symlinks).
 
 Read once. Edit sections 10 and 11 for your project. Prune the rest over time. This file gets better the more you use it.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

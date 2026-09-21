@@ -1,21 +1,47 @@
 @import "tailwindcss";
 
 /*
- * Ori design system. Tokens are the single source of truth — see CLAUDE.md.
- * Do not introduce a new color. Semantic colors carry meaning, never decoration.
+ * Ori design system — "Signal". Tokens are the single source of truth; see AGENTS.md §10.
+ *
+ * Near-black ground, white type, and colour only where it means something: amber is
+ * "this relationship has gone quiet" and nothing else, red is destructive, and each of the
+ * five cluster dimensions has its own hue so a company hub and a relation hub can be told
+ * apart from the back of the room. Every colour used on the canvas is read from here at
+ * runtime (components/graph-canvas.tsx), so a hex value appears exactly once.
  */
 :root {
-  --background: #050505;
-  --card: #0a0a0a;
-  --secondary: #111111;
-  --muted: #171717;
-  --border: #232323;
-  --foreground: #f2f2f2;
-  --muted-foreground: #7a7a7a;
+  --background: #0a0a0b;
+  --card: #121214;
+  --secondary: #18181b;
+  --muted: #202024;
+  /* Hairline for dividers and panel edges (decorative, ~1.5:1). */
+  --border: #33333a;
+  /* Boundary of anything you can operate: inputs, buttons, tags (≥ 3:1 on every surface). */
+  --border-strong: #64646e;
+  --foreground: #ffffff;
+  --muted-foreground: #9a9aa3;
 
+  /* Semantic. Meaning, never decoration. */
   --confidence: #22c55e; /* verified */
-  --caution: #eab308;    /* medium */
-  --alert: #d92d20;      /* high, destructive */
+  --caution: #ffb020;    /* gone quiet (QUIET_AFTER_DAYS), crowdsourced */
+  --alert: #ff4d4d;      /* destructive, errors */
+
+  /* One hue per cluster dimension. Used for hub rings and labels on the canvas and for
+   * the dots beside "Cluster by" in the rail — the two must match. */
+  --hub-company: #6ea8fe;
+  --hub-role: #c084fc;
+  --hub-city: #2dd4bf;
+  --hub-relation: #f472b6;
+  --hub-tag: #a3e635;
+
+  /* Canvas-only. A person who is being looked after is deliberately dim; quiet ones are
+   * drawn in --caution and are the brightest thing on the map. */
+  --graph-person: #5b5b63;
+  --graph-edge: #22222a;
+  --graph-edge-active: #64646e;
+
+  --radius-panel: 14px;
+  --radius-control: 10px;
 }
 
 @theme inline {
@@ -24,16 +50,23 @@
   --color-secondary: var(--secondary);
   --color-muted: var(--muted);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-foreground: var(--foreground);
   --color-muted-foreground: var(--muted-foreground);
   --color-confidence: var(--confidence);
   --color-caution: var(--caution);
   --color-alert: var(--alert);
+  --color-hub-company: var(--hub-company);
+  --color-hub-role: var(--hub-role);
+  --color-hub-city: var(--hub-city);
+  --color-hub-relation: var(--hub-relation);
+  --color-hub-tag: var(--hub-tag);
 
-  --font-sans: var(--font-inter);
+  --font-sans: var(--font-space-grotesk);
   --font-mono: var(--font-jetbrains-mono);
 
-  --radius-panel: 0.375rem;
+  --radius-panel: var(--radius-panel);
+  --radius-control: var(--radius-control);
 }
 
 * {
@@ -43,50 +76,87 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
 }
 
-/* Flat surface with a 1px border. No shadow, no blur, no gradient. */
+/* Surface: card fill, hairline, 14px corners. Flat — depth comes from surface steps. */
 .panel {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 0.375rem;
+  border-radius: var(--radius-panel);
 }
 
+/* Labels, counts, dates, the "42d" counters. Always mono, always uppercase. */
 .label-mono {
   font-family: var(--font-jetbrains-mono), ui-monospace, monospace;
   font-size: 11px;
   line-height: 1.2;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   color: var(--muted-foreground);
 }
 
-/* Motion is restrained: border-color and opacity only. */
+/* A headline number with its mono caption: "125 contacts", "41 gone quiet". */
+.stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+}
+.stat > b {
+  font-weight: 600;
+  font-size: 20px;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+.stat-quiet {
+  border-color: var(--caution);
+}
+.stat-quiet > b,
+.stat-quiet > .label-mono {
+  color: var(--caution);
+}
+
+/* Motion: colour and border in 150ms, position in 180ms with a slight overshoot. */
 button,
 a,
 input,
 select,
 textarea,
 .panel {
-  transition: border-color 0.15s ease, opacity 0.15s ease, background-color 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease,
+    background-color 0.15s ease,
+    opacity 0.15s ease,
+    transform 0.18s cubic-bezier(0.3, 1.4, 0.5, 1);
 }
 
 input,
 select,
 textarea {
   background: var(--secondary);
-  border: 1px solid var(--border);
-  border-radius: 0.375rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
   color: var(--foreground);
+}
+
+input[type="checkbox"] {
+  accent-color: var(--foreground);
+  border-radius: 4px;
 }
 
 input:focus,
 select:focus,
 textarea:focus {
   outline: none;
-  border-color: var(--muted-foreground);
+  border-color: var(--foreground);
 }
 
 ::placeholder {
@@ -98,7 +168,7 @@ textarea:focus {
 }
 
 :focus-visible {
-  outline: 1px solid var(--muted-foreground);
+  outline: 2px solid var(--foreground);
   outline-offset: 2px;
 }
 

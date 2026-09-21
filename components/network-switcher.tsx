@@ -1,7 +1,7 @@
 /**
- * The three mindmaps. Plain links, so this works in a Server Component and the browser
- * back button behaves. The active segment is set apart by border and text color, never
- * by a fill.
+ * The network nav. There is one network now, so this is not a tab group any more: it names
+ * the network you are in and carries its headcount as the first headline number in the
+ * header. Plain links, so it works in a Server Component; aria-current marks the active one.
  */
 import Link from "next/link";
 
@@ -15,7 +15,7 @@ export default function NetworkSwitcher({
   counts: Record<Network, number>;
 }) {
   return (
-    <nav aria-label="Netzwerk" className="flex">
+    <nav aria-label="Network" className="flex items-center gap-3">
       {NETWORKS.map((network) => {
         const current = network === active;
         return (
@@ -23,14 +23,15 @@ export default function NetworkSwitcher({
             key={network}
             href={`/dashboard/${network}`}
             aria-current={current ? "page" : undefined}
-            className={`-ml-px flex items-baseline gap-2 border px-4 py-2 first:ml-0 first:rounded-l-md last:rounded-r-md ${
-              current
-                ? "relative border-foreground text-foreground"
-                : "border-border text-muted-foreground hover:border-muted-foreground"
+            className={`flex items-center gap-3 rounded-full ${
+              current ? "text-foreground" : "text-muted-foreground hover:text-foreground"
             }`}
           >
-            <span className="text-sm">{NETWORK_LABELS[network]}</span>
-            <span className="label-mono">{counts[network]}</span>
+            <span className="text-base font-medium">{NETWORK_LABELS[network]}</span>
+            <span className="stat">
+              <b>{counts[network]}</b>
+              <span className="label-mono">contacts</span>
+            </span>
           </Link>
         );
       })}

@@ -1,27 +1,28 @@
 "use client";
 
 /**
- * Excel/CSV import in three steps. The file is parsed in the browser, so nothing is
- * written before the user has seen the preview and pressed the confirm button.
+ * Spreadsheet import in three steps. The file is read in the browser — as is everything
+ * else now — so nothing is written before the user has seen the preview and pressed the
+ * confirm button.
  */
 import Link from "next/link";
-import { useState, useTransition } from "react";
+import { useState } from "react";
 
-import { importContacts } from "@/lib/actions/import";
 import { parseSpreadsheet, type ParseResult } from "@/lib/core/import/parse-spreadsheet";
 import { CONTACT_TEMPLATE_CSV, CONTACT_TEMPLATE_FILENAME } from "@/lib/core/import/template";
 import type { ImportCounts, Network } from "@/lib/core/types";
 import { BTN, BTN_QUIET, Notice } from "@/components/primitives";
+import { useStore } from "@/lib/store/use-store";
 
-/** The Server Action caps one call; a bigger file is sent in several. */
-const CHUNK = 5000;
 const PREVIEW_ROWS = 20;
 
 const RECOGNIZED =
-  "Vorname, Nachname, E-Mail, Telefon, Firma, Rolle, Stadt, Beziehung, Tags, Notizen, Profil";
+  "First Name, Last Name, Email, Phone, Company, Role, City, Relation, Tags, Notes, Profile";
 
 function downloadTemplate() {
-  const url = URL.createObjectURL(new Blob([CONTACT_TEMPLATE_CSV], { type: "text/csv;charset=utf-8" }));
+  const url = URL.createObjectURL(
+    new Blob([CONTACT_TEMPLATE_CSV], { type: "text/csv;charset=utf-8" }),
+  );
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = CONTACT_TEMPLATE_FILENAME;
@@ -30,13 +31,12 @@ function downloadTemplate() {
 }
 
 export default function ImportWizard({ network }: { network: Network }) {
+  const { importRows } = useStore();
   const [fileName, setFileName] = useState<string | null>(null);
   const [parsing, setParsing] = useState(false);
   const [result, setResult] = useState<ParseResult | null>(null);
   const [counts, setCounts] = useState<ImportCounts | null>(null);
-  const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [importing, startTransition] = useTransition();
 
   const pickFile = async (file: File) => {
     setFileName(file.name);
@@ -50,24 +50,13 @@ export default function ImportWizard({ network }: { network: Network }) {
 
   const confirm = () => {
     if (!result) return;
-    const rows = result.rows.map((row) => row.contact);
+    const response = importRows(network, result.rows.map((row) => row.contact));
 
-    startTransition(async () => {
-      const total: ImportCounts = { inserted: 0, updated: 0, skipped: 0 };
-      for (let index = 0; index < rows.length; index += CHUNK) {
-        setProgress(Math.min(index + CHUNK, rows.length));
-        const response = await importContacts(network, rows.slice(index, index + CHUNK));
-        if (response.error) {
-          setError(response.error);
-          return;
-        }
-        total.inserted += response.counts.inserted;
-        total.updated += response.counts.updated;
-        total.skipped += response.counts.skipped;
-      }
+    if (response.error) setError(response.error);
+    else {
       setError(null);
-      setCounts(total);
-    });
+      setCounts(response.counts);
+    }
   };
 
   const rows = result?.rows ?? [];
@@ -75,13 +64,13 @@ export default function ImportWizard({ network }: { network: Network }) {
   return (
     <div className="panel divide-y divide-border">
       <section className="space-y-4 p-6">
-        <p className="label-mono">1 — Datei wählen</p>
+        <p className="label-mono">1 — Choose a file</p>
         <label className="block">
-          <span className="label-mono block pb-1.5">Excel- oder CSV-Datei</span>
+          <span className="label-mono block pb-1.5">Excel or CSV file</span>
           <input
             type="file"
             accept=".xlsx,.xls,.csv"
-            className="w-full px-3 py-2 text-sm"
+            className="w-full px-3 py-2 text-sm file:mr-3 file:rounded-full file:border file:border-border-strong file:bg-transparent file:px-3 file:py-1 file:text-sm file:font-medium file:text-foreground"
             onChange={(event) => {
               const file = event.target.files?.[0];
               if (file) void pickFile(file);
@@ -89,28 +78,28 @@ export default function ImportWizard({ network }: { network: Network }) {
           />
         </label>
         <p className="text-sm text-muted-foreground">
-          Erkannte Spalten: {RECOGNIZED}. Deutsche oder englische Kopfzeilen, Reihenfolge
-          beliebig, unbekannte Spalten werden ignoriert.
+          Recognized columns: {RECOGNIZED}. English or German headers, any order, unknown
+          columns are ignored.
         </p>
         <button type="button" className={BTN_QUIET} onClick={downloadTemplate}>
-          Vorlage herunterladen
+          Download template
         </button>
       </section>
 
       <section className="space-y-4 p-6">
-        <p className="label-mono">2 — Vorschau</p>
+        <p className="label-mono">2 — Preview</p>
 
-        {parsing ? <p className="text-sm text-muted-foreground">Lese {fileName} …</p> : null}
+        {parsing ? <p className="text-sm text-muted-foreground">Reading {fileName} …</p> : null}
 
         {!parsing && !result ? (
-          <p className="text-sm text-muted-foreground">Noch keine Datei gelesen.</p>
+          <p className="text-sm text-muted-foreground">No file read yet.</p>
         ) : null}
 
         {result?.error ? (
           <div className="space-y-2">
             <Notice tone="alert">{result.error}</Notice>
             <p className="text-sm text-muted-foreground">
-              Lade die Vorlage herunter, übertrage deine Daten hinein und versuche es erneut.
+              Download the template, move your data into it and try again.
             </p>
           </div>
         ) : null}
@@ -118,18 +107,18 @@ export default function ImportWizard({ network }: { network: Network }) {
         {result && !result.error ? (
           <>
             <p className="text-sm text-muted-foreground">
-              {rows.length} Zeilen gelesen
-              {result.skipped > 0 ? `, ${result.skipped} ohne Namen übersprungen` : ""}. Kopfzeile:{" "}
-              {result.headers.join(", ") || "—"}
+              {rows.length} rows read
+              {result.skipped > 0 ? `, ${result.skipped} skipped for having no name` : ""}. Header
+              row: {result.headers.join(", ") || "—"}
             </p>
 
             <div className="overflow-x-auto">
               <table className="w-full min-w-[720px] border-collapse text-left text-sm">
                 <thead>
-                  <tr className="border-b border-border">
-                    {["Zeile", "Name", "E-Mail", "Firma", "Rolle", "Stadt", "Beziehung", "Tags"].map(
+                  <tr className="border-b border-border-strong">
+                    {["Row", "Name", "E-mail", "Company", "Role", "City", "Relation", "Tags"].map(
                       (head) => (
-                        <th key={head} className="label-mono py-2 pr-4 font-normal">
+                        <th key={head} className="label-mono py-2 pr-4 font-medium">
                           {head}
                         </th>
                       ),
@@ -147,7 +136,9 @@ export default function ImportWizard({ network }: { network: Network }) {
                       <td className="py-2 pr-4 text-muted-foreground">{row.contact.company ?? "—"}</td>
                       <td className="py-2 pr-4 text-muted-foreground">{row.contact.role ?? "—"}</td>
                       <td className="py-2 pr-4 text-muted-foreground">{row.contact.city ?? "—"}</td>
-                      <td className="py-2 pr-4 text-muted-foreground">{row.contact.relation ?? "—"}</td>
+                      <td className="py-2 pr-4 text-muted-foreground">
+                        {row.contact.relation ?? "—"}
+                      </td>
                       <td className="py-2 pr-4 text-muted-foreground">
                         {row.contact.tags.join(", ") || "—"}
                       </td>
@@ -159,24 +150,24 @@ export default function ImportWizard({ network }: { network: Network }) {
 
             {rows.length > PREVIEW_ROWS ? (
               <p className="label-mono">
-                Vorschau zeigt {PREVIEW_ROWS} von {rows.length} Zeilen
+                Preview shows {PREVIEW_ROWS} of {rows.length} rows
               </p>
             ) : null}
 
             {rows.some((row) => row.problems.length > 0) ? (
               <div className="space-y-1">
-                <p className="label-mono">Hinweise</p>
+                <p className="label-mono">Remarks</p>
                 <ul className="space-y-1 text-sm text-caution">
                   {rows
                     .filter((row) => row.problems.length > 0)
                     .map((row) => (
                       <li key={row.rowNumber}>
-                        Zeile {row.rowNumber}: {row.problems.join(" · ")}
+                        Row {row.rowNumber}: {row.problems.join(" · ")}
                       </li>
                     ))}
                 </ul>
                 <p className="text-sm text-muted-foreground">
-                  Hinweise blockieren den Import nicht — die Zeilen werden trotzdem angelegt.
+                  Remarks do not block the import — those rows are created anyway.
                 </p>
               </div>
             ) : null}
@@ -185,16 +176,16 @@ export default function ImportWizard({ network }: { network: Network }) {
       </section>
 
       <section className="space-y-4 p-6">
-        <p className="label-mono">3 — Importieren</p>
+        <p className="label-mono">3 — Import</p>
 
         {counts ? (
           <div className="space-y-3">
             <p className="text-sm text-foreground">
-              {counts.inserted} Kontakte angelegt, {counts.skipped} übersprungen (E-Mail war in
-              diesem Netzwerk schon vorhanden).
+              {counts.inserted} contacts created, {counts.skipped} skipped (that e-mail was
+              already in this network).
             </p>
             <Link className={BTN} href={`/dashboard/${network}`}>
-              Zur Mindmap
+              Back to the mindmap
             </Link>
           </div>
         ) : (
@@ -202,15 +193,13 @@ export default function ImportWizard({ network }: { network: Network }) {
             <button
               type="button"
               className={BTN}
-              disabled={!result || Boolean(result.error) || rows.length === 0 || importing}
+              disabled={!result || Boolean(result.error) || rows.length === 0}
               onClick={confirm}
             >
-              {importing
-                ? `Importiere … ${progress} / ${rows.length}`
-                : `${rows.length} Zeilen importieren`}
+              Import {rows.length} rows
             </button>
             <p className="text-sm text-muted-foreground">
-              Erst dieser Klick schreibt in die Datenbank.
+              Only this click writes to your browser&apos;s storage.
             </p>
           </>
         )}

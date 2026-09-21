@@ -1,132 +1,126 @@
 /**
- * Contact reads and writes. RLS already scopes every row to the session user; the explicit
- * `user_id` filter is belt and braces, and it is what makes the service-role client safe
- * to pass in here too.
+ * Contact reads and writes over the in-memory dataset. Pure: every write takes a Dataset
+ * and returns a new one, so the store can just swap its state and persist the result.
  */
+import { newId } from "@/lib/core/ids";
 import {
   normalizeCompany,
   normalizeEmail,
   normalizePhone,
   normalizeTags,
 } from "@/lib/core/import/normalize";
-import type { Contact, ContactInput, Db, Network } from "@/lib/core/types";
+import type { Contact, ContactInput, Dataset, Network } from "@/lib/core/types";
 import { NETWORKS } from "@/lib/core/types";
 
-function unwrap<T>(result: { data: T | null; error: { message: string } | null }): T {
-  if (result.error) throw new Error(result.error.message);
-  if (result.data === null) throw new Error("Datenbank lieferte keine Zeile zurück.");
-  return result.data;
-}
+/** ContactInput -> stored fields. `company_norm` is derived here and nowhere else. */
+function toFields(patch: Partial<ContactInput>): Partial<Contact> {
+  const fields: Partial<Contact> = {};
 
-/** ContactInput -> column values. `company_norm` is derived here and nowhere else. */
-function toColumns(patch: Partial<ContactInput>): Record<string, unknown> {
-  const columns: Record<string, unknown> = {};
-
-  if (patch.first_name !== undefined) columns.first_name = patch.first_name.trim();
-  if (patch.last_name !== undefined) columns.last_name = patch.last_name.trim();
-  if (patch.email !== undefined) columns.email = normalizeEmail(patch.email);
-  if (patch.phone !== undefined) columns.phone = normalizePhone(patch.phone);
-  if (patch.role !== undefined) columns.role = patch.role?.trim() || null;
-  if (patch.city !== undefined) columns.city = patch.city?.trim() || null;
-  if (patch.relation !== undefined) columns.relation = patch.relation?.trim() || null;
-  if (patch.tags !== undefined) columns.tags = normalizeTags(patch.tags);
-  if (patch.notes !== undefined) columns.notes = patch.notes?.trim() || null;
-  if (patch.profile_url !== undefined) columns.profile_url = patch.profile_url?.trim() || null;
+  if (patch.first_name !== undefined) fields.first_name = patch.first_name.trim();
+  if (patch.last_name !== undefined) fields.last_name = patch.last_name.trim();
+  if (patch.email !== undefined) fields.email = normalizeEmail(patch.email);
+  if (patch.phone !== undefined) fields.phone = normalizePhone(patch.phone);
+  if (patch.role !== undefined) fields.role = patch.role?.trim() || null;
+  if (patch.city !== undefined) fields.city = patch.city?.trim() || null;
+  if (patch.relation !== undefined) fields.relation = patch.relation?.trim() || null;
+  if (patch.tags !== undefined) fields.tags = normalizeTags(patch.tags);
+  if (patch.notes !== undefined) fields.notes = patch.notes?.trim() || null;
+  if (patch.profile_url !== undefined) fields.profile_url = patch.profile_url?.trim() || null;
+  if (patch.crowdsourced !== undefined) fields.crowdsourced = patch.crowdsourced;
+  if (patch.account_value !== undefined) fields.account_value = patch.account_value;
 
   // company and company_norm always move together, or the clustering silently rots.
   if (patch.company !== undefined) {
-    columns.company = patch.company?.trim() || null;
-    columns.company_norm = normalizeCompany(patch.company);
+    fields.company = patch.company?.trim() || null;
+    fields.company_norm = normalizeCompany(patch.company);
   }
 
-  return columns;
+  return fields;
 }
 
-export async function listContacts(
-  supabase: Db,
-  userId: string,
-  network: Network,
-): Promise<Contact[]> {
-  const result = await supabase
-    .from("contacts")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("network", network)
-    .order("last_name", { ascending: true })
-    .order("first_name", { ascending: true });
+const byName = (a: Contact, b: Contact) =>
+  a.last_name.localeCompare(b.last_name) || a.first_name.localeCompare(b.first_name);
 
-  return unwrap(result) as Contact[];
+export function listContacts(dataset: Dataset, network: Network): Contact[] {
+  return dataset.contacts.filter((contact) => contact.network === network).sort(byName);
 }
 
-export async function getContact(
-  supabase: Db,
-  userId: string,
-  id: string,
-): Promise<Contact | null> {
-  const { data, error } = await supabase
-    .from("contacts")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("id", id)
-    .maybeSingle();
-
-  if (error) throw new Error(error.message);
-  return (data as Contact | null) ?? null;
+export function getContact(dataset: Dataset, id: string): Contact | null {
+  return dataset.contacts.find((contact) => contact.id === id) ?? null;
 }
 
-export async function createContact(
-  supabase: Db,
-  userId: string,
+export function createContact(
+  dataset: Dataset,
   network: Network,
   input: ContactInput,
-): Promise<Contact> {
-  const result = await supabase
-    .from("contacts")
-    .insert({ ...toColumns(input), user_id: userId, network, source: "manual" })
-    .select("*")
-    .single();
+): { dataset: Dataset; contact: Contact } {
+  const now = new Date().toISOString();
 
-  return unwrap(result) as Contact;
+  const contact: Contact = {
+    first_name: "",
+    last_name: "",
+    email: null,
+    phone: null,
+    company: null,
+    role: null,
+    city: null,
+    relation: null,
+    tags: [],
+    notes: null,
+    profile_url: null,
+    crowdsourced: false,
+    account_value: null,
+    ...toFields(input),
+    id: newId(),
+    network,
+    company_norm: normalizeCompany(input.company),
+    source: "manual",
+    created_at: now,
+    updated_at: now,
+  };
+
+  return {
+    dataset: { ...dataset, contacts: [...dataset.contacts, contact] },
+    contact,
+  };
 }
 
-export async function updateContact(
-  supabase: Db,
-  userId: string,
+export function updateContact(
+  dataset: Dataset,
   id: string,
   patch: Partial<ContactInput>,
-): Promise<Contact> {
-  const result = await supabase
-    .from("contacts")
-    .update({ ...toColumns(patch), updated_at: new Date().toISOString() })
-    .eq("user_id", userId)
-    .eq("id", id)
-    .select("*")
-    .single();
+): { dataset: Dataset; contact: Contact } {
+  const existing = getContact(dataset, id);
+  if (!existing) throw new Error("Contact not found.");
 
-  return unwrap(result) as Contact;
+  const contact: Contact = {
+    ...existing,
+    ...toFields(patch),
+    updated_at: new Date().toISOString(),
+  };
+
+  return {
+    dataset: {
+      ...dataset,
+      contacts: dataset.contacts.map((row) => (row.id === id ? contact : row)),
+    },
+    contact,
+  };
 }
 
-export async function deleteContact(supabase: Db, userId: string, id: string): Promise<void> {
-  const { error } = await supabase
-    .from("contacts")
-    .delete()
-    .eq("user_id", userId)
-    .eq("id", id);
-
-  if (error) throw new Error(error.message);
+/** Cascades to the interaction log — Postgres used to do this with ON DELETE CASCADE. */
+export function deleteContact(dataset: Dataset, id: string): Dataset {
+  return {
+    contacts: dataset.contacts.filter((contact) => contact.id !== id),
+    interactions: dataset.interactions.filter((entry) => entry.contact_id !== id),
+  };
 }
 
-/** Badge numbers for the network switcher. One query, counted in JS. */
-export async function networkCounts(
-  supabase: Db,
-  userId: string,
-): Promise<Record<Network, number>> {
-  const result = await supabase.from("contacts").select("network").eq("user_id", userId);
-  const rows = unwrap(result) as { network: Network }[];
-
+/** Badge numbers for the network switcher. */
+export function networkCounts(dataset: Dataset): Record<Network, number> {
   const counts = Object.fromEntries(NETWORKS.map((n) => [n, 0])) as Record<Network, number>;
-  for (const row of rows) {
-    if (row.network in counts) counts[row.network]++;
+  for (const contact of dataset.contacts) {
+    if (contact.network in counts) counts[contact.network]++;
   }
   return counts;
 }

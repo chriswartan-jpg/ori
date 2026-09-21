@@ -2,66 +2,43 @@
  * The interaction log. "Last contacted" is derived from these rows (see read.ts), never
  * stored on the contact, so writing here is the only thing that has to succeed.
  */
-import type { Db, Interaction, InteractionInput } from "@/lib/core/types";
+import { newId } from "@/lib/core/ids";
+import type { Dataset, Interaction, InteractionInput } from "@/lib/core/types";
 
-const COLUMNS = "id, contact_id, kind, occurred_on, note, created_at";
+/** Newest first, and within one day the most recently entered first. */
+const byDate = (a: Interaction, b: Interaction) =>
+  b.occurred_on.localeCompare(a.occurred_on) || b.created_at.localeCompare(a.created_at);
 
-export async function listInteractions(
-  supabase: Db,
-  userId: string,
-  contactId: string,
-): Promise<Interaction[]> {
-  const { data, error } = await supabase
-    .from("interactions")
-    .select(COLUMNS)
-    .eq("user_id", userId)
-    .eq("contact_id", contactId)
-    .order("occurred_on", { ascending: false })
-    .order("created_at", { ascending: false });
-
-  if (error) throw new Error(error.message);
-  return (data ?? []) as unknown as Interaction[];
+export function listInteractions(dataset: Dataset, contactId: string): Interaction[] {
+  return dataset.interactions.filter((entry) => entry.contact_id === contactId).sort(byDate);
 }
 
-export async function logInteraction(
-  supabase: Db,
-  userId: string,
+export function logInteraction(
+  dataset: Dataset,
   input: InteractionInput,
-): Promise<Interaction> {
-  // The contact must belong to the caller: without this check a valid session could log
-  // against someone else's contact id. RLS on insert would allow it, user_id is our own.
-  const owner = await supabase
-    .from("contacts")
-    .select("id")
-    .eq("user_id", userId)
-    .eq("id", input.contact_id)
-    .maybeSingle();
+): { dataset: Dataset; interaction: Interaction } {
+  if (!dataset.contacts.some((contact) => contact.id === input.contact_id)) {
+    throw new Error("Contact not found.");
+  }
 
-  if (owner.error) throw new Error(owner.error.message);
-  if (!owner.data) throw new Error("Kontakt nicht gefunden.");
+  const interaction: Interaction = {
+    id: newId(),
+    contact_id: input.contact_id,
+    kind: input.kind,
+    occurred_on: input.occurred_on,
+    note: input.note?.trim() || null,
+    created_at: new Date().toISOString(),
+  };
 
-  const { data, error } = await supabase
-    .from("interactions")
-    .insert({
-      user_id: userId,
-      contact_id: input.contact_id,
-      kind: input.kind,
-      occurred_on: input.occurred_on,
-      note: input.note?.trim() || null,
-    })
-    .select(COLUMNS)
-    .single();
-
-  if (error) throw new Error(error.message);
-  return data as unknown as Interaction;
+  return {
+    dataset: { ...dataset, interactions: [...dataset.interactions, interaction] },
+    interaction,
+  };
 }
 
-export async function deleteInteraction(supabase: Db, userId: string, id: string): Promise<void> {
-  const { error } = await supabase
-    .from("interactions")
-    .delete()
-    .eq("user_id", userId)
-    .eq("id", id);
-
-  if (error) throw new Error(error.message);
+export function deleteInteraction(dataset: Dataset, id: string): Dataset {
+  return {
+    ...dataset,
+    interactions: dataset.interactions.filter((entry) => entry.id !== id),
+  };
 }

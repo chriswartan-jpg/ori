@@ -3,38 +3,18 @@
  * exists in this network is skipped and reported, because a wrong merge is unrecoverable
  * and a skip is not.
  */
+import { newId } from "@/lib/core/ids";
 import {
   normalizeCompany,
   normalizeEmail,
   normalizePhone,
   normalizeTags,
 } from "@/lib/core/import/normalize";
-import type { ContactInput, Db, ImportCounts, Network } from "@/lib/core/types";
+import type { Contact, ContactInput, Dataset, ImportCounts, Network } from "@/lib/core/types";
 
-/** Postgres unique_violation. The pre-lookup misses concurrent inserts; this catches them. */
-const UNIQUE_VIOLATION = "23505";
-
-type ContactRow = {
-  user_id: string;
-  network: Network;
-  first_name: string;
-  last_name: string;
-  email: string | null;
-  phone: string | null;
-  company: string | null;
-  company_norm: string | null;
-  role: string | null;
-  city: string | null;
-  relation: string | null;
-  tags: string[];
-  notes: string | null;
-  profile_url: string | null;
-  source: "excel";
-};
-
-function toRow(userId: string, network: Network, input: ContactInput): ContactRow {
+function toContact(network: Network, input: ContactInput, now: string): Contact {
   return {
-    user_id: userId,
+    id: newId(),
     network,
     first_name: input.first_name.trim(),
     last_name: input.last_name.trim(),
@@ -48,75 +28,53 @@ function toRow(userId: string, network: Network, input: ContactInput): ContactRo
     tags: normalizeTags(input.tags),
     notes: input.notes?.trim() || null,
     profile_url: input.profile_url?.trim() || null,
+    crowdsourced: input.crowdsourced ?? false,
+    account_value: input.account_value ?? null,
     source: "excel",
+    created_at: now,
+    updated_at: now,
   };
 }
 
 /**
- * Every e-mail already in this network, lowercased. Not an `in (...)` on the batch's own
- * e-mails: the unique index is on `lower(email)`, so a stored "Anna@X.com" has to collide
- * with an imported "anna@x.com" and a case-sensitive `in` would miss it.
- *
- * ponytail: reads the whole network's e-mail column per 200-row batch. Fine for the
- * hundreds of contacts a personal network has; switch to one lookup per import if a
- * network ever runs into the thousands.
+ * Every e-mail already in this network, lowercased. The dedupe is deliberately
+ * case-insensitive: a stored "Anna@X.com" has to collide with an imported "anna@x.com".
  */
-async function existingEmails(supabase: Db, userId: string, network: Network): Promise<Set<string>> {
-  const { data, error } = await supabase
-    .from("contacts")
-    .select("email")
-    .eq("user_id", userId)
-    .eq("network", network)
-    .not("email", "is", null);
-
-  if (error) throw new Error(error.message);
-
-  return new Set(
-    (data ?? [])
-      .map((row: { email: string | null }) => normalizeEmail(row.email))
-      .filter((email): email is string => email !== null),
-  );
+function existingEmails(dataset: Dataset, network: Network): Set<string> {
+  const taken = new Set<string>();
+  for (const contact of dataset.contacts) {
+    if (contact.network !== network) continue;
+    const email = normalizeEmail(contact.email);
+    if (email) taken.add(email);
+  }
+  return taken;
 }
 
-export async function ingestContacts(
-  supabase: Db,
-  userId: string,
+export function ingestContacts(
+  dataset: Dataset,
   network: Network,
   batch: ContactInput[],
-): Promise<ImportCounts> {
-  const rows = batch.map((input) => toRow(userId, network, input));
-  const taken = await existingEmails(supabase, userId, network);
+): { dataset: Dataset; counts: ImportCounts } {
+  const now = new Date().toISOString();
+  const taken = existingEmails(dataset, network);
 
-  const insertable: ContactRow[] = [];
+  const added: Contact[] = [];
   let skipped = 0;
 
-  for (const row of rows) {
+  for (const input of batch) {
+    const contact = toContact(network, input, now);
+
     // No e-mail means no dedupe key, so it always goes in.
-    if (row.email && taken.has(row.email)) {
+    if (contact.email && taken.has(contact.email)) {
       skipped++;
       continue;
     }
-    if (row.email) taken.add(row.email); // duplicates *within* the file, too
-    insertable.push(row);
+    if (contact.email) taken.add(contact.email); // duplicates *within* the file, too
+    added.push(contact);
   }
 
-  if (!insertable.length) return { inserted: 0, updated: 0, skipped };
-
-  const { error } = await supabase.from("contacts").insert(insertable);
-  if (!error) return { inserted: insertable.length, updated: 0, skipped };
-
-  // The partial unique index is on lower(email), which supabase-js cannot target with
-  // onConflict, so the safety net is a one-by-one retry: one racing duplicate must not
-  // cost the user the other 199 rows.
-  if (error.code !== UNIQUE_VIOLATION) throw new Error(error.message);
-
-  let inserted = 0;
-  for (const row of insertable) {
-    const single = await supabase.from("contacts").insert(row);
-    if (!single.error) inserted++;
-    else if (single.error.code === UNIQUE_VIOLATION) skipped++;
-    else throw new Error(single.error.message);
-  }
-
-  return { inserted, updated: 0, skipped };
+  return {
+    dataset: { ...dataset, contacts: [...dataset.contacts, ...added] },
+    counts: { inserted: added.length, updated: 0, skipped },
+  };
 }

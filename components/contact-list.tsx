@@ -26,7 +26,7 @@ export default function ContactList({
   if (!contacts.length) {
     return (
       <p className="p-4 text-sm text-muted-foreground">
-        Kein Kontakt passt zu diesen Filtern.
+        No contact matches these filters.
       </p>
     );
   }
@@ -49,15 +49,26 @@ export default function ContactList({
               }`}
             >
               <span className="min-w-0">
-                <span className="block truncate text-sm text-foreground">
+                <span className="flex items-center gap-2 truncate text-sm font-medium text-foreground">
+                  {quiet ? (
+                    <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-caution" />
+                  ) : null}
                   {contact.first_name} {contact.last_name}
+                  {contact.crowdsourced ? (
+                    <span
+                      className="label-mono ml-2 text-caution"
+                      title="Contains crowdsourced information"
+                    >
+                      CS
+                    </span>
+                  ) : null}
                 </span>
                 <span className="block truncate text-xs text-muted-foreground">
                   {subtitle(contact) || "—"}
                 </span>
               </span>
-              <span className={`label-mono shrink-0 ${quiet ? "text-caution" : ""}`}>
-                {days === null ? "nie" : `${days} T`}
+              <span className={`label-mono shrink-0 ${quiet ? "font-medium text-caution" : ""}`}>
+                {days === null ? "never" : `${days}d`}
               </span>
             </button>
           </li>

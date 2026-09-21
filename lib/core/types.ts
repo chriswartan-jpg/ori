@@ -1,18 +1,17 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
-
 /**
- * Shared contract between db, core and ui. Changes here are agreed, never unilateral.
- * This module is framework-free: nothing under lib/core imports from next/*.
+ * Shared contract between core, the store and the UI. Changes here are agreed, never
+ * unilateral. This module is framework-free: nothing under lib/core imports from next/*.
  */
 
-/** The three mindmaps. A contact lives in exactly one of them. */
-export const NETWORKS = ["business", "friends", "family"] as const;
+/**
+ * The mindmap. One network holds the whole address book — business contacts and friends
+ * in the same graph, so a colleague who became a friend is one node, not two.
+ */
+export const NETWORKS = ["connections"] as const;
 export type Network = (typeof NETWORKS)[number];
 
 export const NETWORK_LABELS: Record<Network, string> = {
-  business: "Business",
-  friends: "Freunde",
-  family: "Familie",
+  connections: "Connections",
 };
 
 export function isNetwork(value: string): value is Network {
@@ -23,11 +22,11 @@ export const INTERACTION_KINDS = ["call", "message", "meeting", "email", "note"]
 export type InteractionKind = (typeof INTERACTION_KINDS)[number];
 
 export const INTERACTION_LABELS: Record<InteractionKind, string> = {
-  call: "Telefonat",
-  message: "Nachricht",
-  meeting: "Treffen",
-  email: "E-Mail",
-  note: "Notiz",
+  call: "Call",
+  message: "Message",
+  meeting: "Meeting",
+  email: "E-mail",
+  note: "Note",
 };
 
 export type ContactSource = "manual" | "excel";
@@ -48,17 +47,30 @@ export type ContactInput = {
   /** Free-text job title (business) — kept as the user typed it. */
   role: string | null;
   city: string | null;
-  /** How you know them: "Bruder", "Studium", "Kundin". Clustering material for friends/family. */
+  /** How you know them: "Brother", "University", "Client". Clustering material. */
   relation: string | null;
   tags: string[];
   notes: string | null;
   /** Optional profile link (LinkedIn, Instagram, website). Display only. */
   profile_url: string | null;
+  /**
+   * Some of this contact's details came from a crowdsourced source rather than from the
+   * person themselves, so the UI shows a caution above their card. Provenance only — no
+   * data is fetched or exchanged anywhere (see AGENTS.md, "No backend").
+   */
+  crowdsourced: boolean;
+  /**
+   * What this relationship is worth per year, in EUR. null when unknown — most personal
+   * contacts have no value and must not be counted as zero-value accounts.
+   *
+   * This is what turns "26 contacts have gone quiet" into "how much revenue is cooling":
+   * see `valueAtRisk` in lib/core/graph/clusters.ts.
+   */
+  account_value: number | null;
 };
 
 export type Contact = ContactInput & {
   id: string;
-  user_id: string;
   network: Network;
   company_norm: string | null;
   source: ContactSource;
@@ -82,6 +94,17 @@ export type InteractionInput = {
   note: string | null;
 };
 
+/**
+ * Everything the app owns, in one value. There is no server and no database: the store
+ * keeps exactly this in the browser and every core function takes it as an argument.
+ */
+export type Dataset = {
+  contacts: Contact[];
+  interactions: Interaction[];
+};
+
+export const EMPTY_DATASET: Dataset = { contacts: [], interactions: [] };
+
 /** The slim projection the mindmap reads. No notes, no timestamps, one network at a time. */
 export type GraphContact = {
   id: string;
@@ -95,6 +118,8 @@ export type GraphContact = {
   /** ISO date of the most recent interaction, null if there is none yet. */
   last_contact_on: string | null;
   interaction_count: number;
+  crowdsourced: boolean;
+  account_value: number | null;
 };
 
 export type AttrKind = "company" | "role" | "city" | "relation" | "tag";
@@ -163,9 +188,3 @@ export function todayIso(now = new Date()): string {
   const d = String(now.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
-
-/**
- * Any Supabase client — browser, request-scoped server, or service role. Core takes one
- * as an argument and never creates one, which is what keeps lib/core framework-free.
- */
-export type Db = SupabaseClient;

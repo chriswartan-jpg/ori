@@ -1,17 +1,31 @@
 /**
- * The only checks in the project: the spreadsheet parser, the graph build and the filter
- * math. Everything else is either a thin adapter or UI.
+ * The only checks in the project: the spreadsheet parser, the graph build, the filter
+ * math and the dataset layer that replaced the database. Everything else is UI.
  *
  * Run with `npm run check`. No framework — node:assert and a process exit code.
  */
 import assert from "node:assert/strict";
 
+import { createContact, deleteContact, networkCounts } from "@/lib/core/contacts";
 import { applyFilter, collectFacets } from "@/lib/core/graph/filter";
 import { buildGraph } from "@/lib/core/graph/build";
+import { buildClusterOverview, coldestClusters } from "@/lib/core/graph/clusters";
+import { buildEasyMailDraft, worthContactingReason } from "@/lib/core/easymail";
+import { ingestContacts } from "@/lib/core/import/ingest";
+import { logInteraction } from "@/lib/core/interactions";
 import { parseCsvText } from "@/lib/core/import/parse-spreadsheet";
 import { CONTACT_TEMPLATE_CSV } from "@/lib/core/import/template";
 import { normalizePhone, normalizeTags } from "@/lib/core/import/normalize";
-import type { AttrNode, GraphContact, PersonNode } from "@/lib/core/types";
+import { getGraphData } from "@/lib/core/read";
+import { EMPTY_DATASET } from "@/lib/core/types";
+import type {
+  AttrNode,
+  Contact,
+  ContactInput,
+  GraphContact,
+  Interaction,
+  PersonNode,
+} from "@/lib/core/types";
 
 let failures = 0;
 
@@ -83,7 +97,7 @@ check("(a) combined name column splits at the last space", () => {
     "Name;E-Mail;Stadt\n" +
       "Anna Maria Schmidt;anna@example.com;Berlin\n" +
       "Cher;cher@example.com;Los Angeles\n" +
-      "Weber, Jonas;nicht-mal-eine-mail;Hamburg\n",
+      "Weber, Jonas;not-even-an-address;Hamburg\n",
   );
 
   assert.equal(result.error, null);
@@ -94,7 +108,7 @@ check("(a) combined name column splits at the last space", () => {
   assert.equal(result.rows[1].contact.last_name, "", "a single token is the first name");
   // An implausible e-mail is reported, never blocking.
   assert.equal(result.rows[2].problems.length, 1);
-  assert.match(result.rows[2].problems[0], /E-Mail/);
+  assert.match(result.rows[2].problems[0], /E-mail/);
 });
 
 check("(a) a 'Name' column beside 'Vorname' is the surname, not a combined name", () => {
@@ -178,6 +192,8 @@ function synthetic(): GraphContact[] {
       tags: TAGS[i % TAGS.length],
       last_contact_on: i % 3 === 0 ? "2026-09-01" : "2025-01-01",
       interaction_count: i % 3,
+      crowdsourced: false,
+      account_value: null,
     });
   }
 
@@ -192,6 +208,8 @@ function synthetic(): GraphContact[] {
     tags: [],
     last_contact_on: null,
     interaction_count: 0,
+    crowdsourced: false,
+    account_value: null,
   });
 
   return contacts;
@@ -283,6 +301,8 @@ const FILTER_CONTACTS: GraphContact[] = [
     tags: ["kunde", "messe"],
     last_contact_on: "2026-09-10", // 11 days -> loud
     interaction_count: 3,
+    crowdsourced: false,
+    account_value: null,
   },
   {
     id: "b",
@@ -295,6 +315,8 @@ const FILTER_CONTACTS: GraphContact[] = [
     tags: ["tech"],
     last_contact_on: "2025-01-01", // > 90 days -> quiet
     interaction_count: 1,
+    crowdsourced: false,
+    account_value: null,
   },
   {
     id: "c",
@@ -307,6 +329,8 @@ const FILTER_CONTACTS: GraphContact[] = [
     tags: ["tech", "messe"],
     last_contact_on: "2026-09-15",
     interaction_count: 7,
+    crowdsourced: false,
+    account_value: null,
   },
   {
     id: "d",
@@ -319,6 +343,8 @@ const FILTER_CONTACTS: GraphContact[] = [
     tags: [],
     last_contact_on: null, // no interaction at all -> quiet
     interaction_count: 0,
+    crowdsourced: false,
+    account_value: null,
   },
 ];
 
@@ -418,7 +444,7 @@ check("(e) CONTACT_TEMPLATE_CSV parses cleanly through parseCsvText", () => {
     assert.equal(row.contact.tags.length, 2, "two tags from one quoted cell");
   }
 
-  assert.equal(result.rows[0].contact.city, "Berlin");
+  assert.equal(result.rows[0].contact.city, "London");
   assert.equal(result.rows[1].contact.profile_url, null, "an empty trailing cell is null");
 });
 
@@ -433,6 +459,355 @@ check("normalizePhone / normalizeTags", () => {
   assert.deepEqual(normalizeTags("kunde; messe |kunde"), ["kunde", "messe"]);
   assert.deepEqual(normalizeTags(["  a ", "A", ""]), ["a"]);
   assert.deepEqual(normalizeTags(null), []);
+});
+
+// ------------------------------------------------------------------- (f) dataset layer
+// These used to be database guarantees: a partial unique index on lower(email) and an
+// ON DELETE CASCADE. With no backend they are plain code, so they get checked.
+
+const CONTACT_FIELDS = {
+  email: null,
+  phone: null,
+  company: null,
+  role: null,
+  city: null,
+  relation: null,
+  tags: [],
+  notes: null,
+  profile_url: null,
+  crowdsourced: false,
+  account_value: null,
+};
+
+const input = (first: string, email: string | null): ContactInput => ({
+  ...CONTACT_FIELDS,
+  first_name: first,
+  last_name: "Test",
+  email,
+});
+
+check("(f) import skips an e-mail already in the network, case-insensitively", () => {
+  const seeded = ingestContacts(EMPTY_DATASET, "connections", [input("Anna", "Anna@X.com")]);
+  assert.equal(seeded.counts.inserted, 1);
+
+  const again = ingestContacts(seeded.dataset, "connections", [input("Anna", "anna@x.com")]);
+  assert.deepEqual(again.counts, { inserted: 0, updated: 0, skipped: 1 });
+  assert.equal(again.dataset.contacts.length, 1, "the dataset is unchanged");
+});
+
+check("(f) import dedupes within one batch, and a row with no e-mail always goes in", () => {
+  const result = ingestContacts(EMPTY_DATASET, "connections", [
+    input("Anna", "anna@x.com"),
+    input("Anna", "ANNA@x.com"),
+    input("Nameless", null),
+    input("Also nameless", null),
+  ]);
+
+  assert.deepEqual(result.counts, { inserted: 3, updated: 0, skipped: 1 });
+});
+
+check("(f) deleting a contact takes its interactions with it", () => {
+  const created = createContact(EMPTY_DATASET, "connections", input("Anna", null));
+  const other = createContact(created.dataset, "connections", input("Jonas", null));
+
+  let dataset = logInteraction(other.dataset, {
+    contact_id: created.contact.id,
+    kind: "call",
+    occurred_on: "2026-09-01",
+    note: null,
+  }).dataset;
+  dataset = logInteraction(dataset, {
+    contact_id: other.contact.id,
+    kind: "call",
+    occurred_on: "2026-09-02",
+    note: null,
+  }).dataset;
+
+  const after = deleteContact(dataset, created.contact.id);
+  assert.equal(after.contacts.length, 1);
+  assert.equal(after.interactions.length, 1, "only the other contact's log survives");
+  assert.equal(after.interactions[0].contact_id, other.contact.id);
+});
+
+check("(f) logging against a contact that does not exist is an error", () => {
+  assert.throws(() =>
+    logInteraction(EMPTY_DATASET, {
+      contact_id: "nope",
+      kind: "call",
+      occurred_on: "2026-09-01",
+      note: null,
+    }),
+  );
+});
+
+check("(f) getGraphData folds the log into a count and the latest date", () => {
+  const created = createContact(EMPTY_DATASET, "connections", input("Anna", null));
+  const silent = createContact(created.dataset, "connections", input("Jonas", null));
+
+  let dataset = silent.dataset;
+  for (const occurred_on of ["2026-01-05", "2026-03-20", "2026-02-11"]) {
+    dataset = logInteraction(dataset, {
+      contact_id: created.contact.id,
+      kind: "call",
+      occurred_on,
+      note: null,
+    }).dataset;
+  }
+
+  const rows = getGraphData(dataset, "connections");
+  assert.equal(rows.length, 2);
+
+  const anna = rows.find((row) => row.id === created.contact.id)!;
+  assert.equal(anna.interaction_count, 3);
+  assert.equal(anna.last_contact_on, "2026-03-20", "max, not most recently entered");
+
+  const jonas = rows.find((row) => row.id === silent.contact.id)!;
+  assert.equal(jonas.interaction_count, 0);
+  assert.equal(jonas.last_contact_on, null, "never contacted is null, not a date");
+
+  assert.deepEqual(networkCounts(dataset), { connections: 2 });
+});
+
+// ------------------------------------------------------------- (g) cluster overview
+// The first screen and the demo's headline number, so both get pinned.
+
+/** Three companies with known quiet counts: Acme 3/4 quiet, Beta 1/3, Gamma 0/2. */
+function clusterFixture(): { graph: ReturnType<typeof buildGraph>; quiet: Set<string> } {
+  const rows: GraphContact[] = [];
+  const add = (id: string, company: string, city: string | null) =>
+    rows.push({
+      id,
+      first_name: "P",
+      last_name: id,
+      company_norm: company,
+      role: null,
+      city,
+      relation: null,
+      tags: [],
+      last_contact_on: null,
+      interaction_count: 0,
+      crowdsourced: false,
+      account_value: null,
+    });
+
+  for (const id of ["a1", "a2", "a3", "a4"]) add(id, "Acme", "Berlin");
+  for (const id of ["b1", "b2", "b3"]) add(id, "Beta", "Berlin");
+  for (const id of ["g1", "g2"]) add(id, "Gamma", null);
+
+  return {
+    graph: buildGraph(rows),
+    quiet: new Set(["person:a1", "person:a2", "person:a3", "person:b1"]),
+  };
+}
+
+check("(g) cluster overview counts members and quiet members per cluster", () => {
+  const { graph, quiet } = clusterFixture();
+  const overview = buildClusterOverview(graph, ["company"], quiet);
+
+  assert.deepEqual(
+    overview.nodes.map((node) => node.label).sort(),
+    ["Acme", "Beta", "Gamma"],
+    "only the company dimension",
+  );
+
+  const acme = overview.stats.get("company:acme")!;
+  assert.equal(acme.size, 4);
+  assert.equal(acme.quiet, 3);
+  assert.equal(overview.stats.get("company:gamma")!.quiet, 0);
+});
+
+check("(g) a dimension that is switched off produces no clusters", () => {
+  const { graph, quiet } = clusterFixture();
+  const overview = buildClusterOverview(graph, ["relation"], quiet);
+  assert.deepEqual(overview.nodes, [], "no relations in the fixture");
+  assert.deepEqual(overview.edges, []);
+});
+
+check("(g) two companies are never linked — nobody has two employers", () => {
+  const { graph, quiet } = clusterFixture();
+  const overview = buildClusterOverview(graph, ["company"], quiet);
+  assert.deepEqual(overview.edges, []);
+
+  // Add the city back and Berlin links to the companies that share enough people with it.
+  const withCity = buildClusterOverview(graph, ["company", "city"], quiet);
+  for (const edge of withCity.edges) {
+    assert.ok(
+      edge.source.startsWith("city:") || edge.target.startsWith("city:"),
+      `every edge touches the city hub: ${edge.source} -> ${edge.target}`,
+    );
+  }
+});
+
+check("(g) value at risk counts only the quiet members", () => {
+  const { graph, quiet } = clusterFixture();
+  // Everyone at Acme is worth 10k; only b1 at Beta is valued, at 500k.
+  const values = new Map<string, number>([
+    ["person:a1", 10_000],
+    ["person:a2", 10_000],
+    ["person:a3", 10_000],
+    ["person:a4", 10_000],
+    ["person:b1", 500_000],
+  ]);
+
+  const overview = buildClusterOverview(graph, ["company"], quiet, values);
+
+  const acme = overview.stats.get("company:acme")!;
+  assert.equal(acme.value, 40_000, "all four members");
+  assert.equal(acme.valueAtRisk, 30_000, "only the three quiet ones");
+
+  const beta = overview.stats.get("company:beta")!;
+  assert.equal(beta.value, 500_000);
+  assert.equal(beta.valueAtRisk, 500_000, "b1 is the quiet one");
+
+  const gamma = overview.stats.get("company:gamma")!;
+  assert.equal(gamma.value, 0, "unvalued contacts contribute nothing");
+  assert.equal(gamma.valueAtRisk, 0);
+});
+
+check("(g) money outranks headcount: one big quiet account beats three small ones", () => {
+  const { graph, quiet } = clusterFixture();
+  const values = new Map<string, number>([
+    ["person:a1", 10_000],
+    ["person:a2", 10_000],
+    ["person:a3", 10_000],
+    ["person:b1", 500_000],
+  ]);
+
+  const byMoney = coldestClusters(buildClusterOverview(graph, ["company"], quiet, values));
+  assert.deepEqual(
+    byMoney.map((c) => c.label),
+    ["Beta", "Acme"],
+    "Beta has 1 quiet contact but 500k at risk; Acme has 3 quiet worth 30k",
+  );
+
+  // With no values at all, the ranking falls back to quiet headcount.
+  const byCount = coldestClusters(buildClusterOverview(graph, ["company"], quiet));
+  assert.deepEqual(byCount.map((c) => c.label), ["Acme", "Beta"]);
+});
+
+check("(g) coldest accounts rank by quiet headcount, then by share", () => {
+  const { graph, quiet } = clusterFixture();
+  const overview = buildClusterOverview(graph, ["company", "city"], quiet);
+
+  const cold = coldestClusters(overview);
+  assert.deepEqual(
+    cold.map((c) => c.label),
+    ["Acme", "Beta"],
+    "companies only, quiet ones only, most quiet first",
+  );
+  assert.equal(cold[0].quiet, 3);
+  assert.equal(cold[0].quietShare, 0.75);
+  assert.ok(!cold.some((c) => c.label === "Gamma"), "a cluster with nobody quiet is not cold");
+  assert.ok(!cold.some((c) => c.attr === "city"), "cities are not accounts");
+});
+
+// ----------------------------------------------------------------------- (h) EasyMail
+// The draft is shown to the user and then sent by them, so it must never invent a fact.
+
+const MAIL_TODAY = "2026-09-21";
+
+function mailContact(over: Partial<Contact> = {}): Contact {
+  return {
+    ...CONTACT_FIELDS,
+    id: "m1",
+    network: "connections",
+    first_name: "Grace",
+    last_name: "Okonkwo",
+    company: "Zenith Capital Ltd",
+    company_norm: "Zenith Capital",
+    role: "Partner",
+    source: "manual",
+    created_at: `${MAIL_TODAY}T00:00:00.000Z`,
+    updated_at: `${MAIL_TODAY}T00:00:00.000Z`,
+    ...over,
+  } as Contact;
+}
+
+function mailInteraction(over: Partial<Interaction> = {}): Interaction {
+  return {
+    id: "i1",
+    contact_id: "m1",
+    kind: "meeting",
+    occurred_on: "2025-01-05",
+    note: null,
+    created_at: `${MAIL_TODAY}T00:00:00.000Z`,
+    ...over,
+  };
+}
+
+check("(h) the draft greets by first name and carries the address and company", () => {
+  const draft = buildEasyMailDraft({
+    contact: mailContact(),
+    lastInteraction: mailInteraction(),
+    today: MAIL_TODAY,
+  });
+
+  assert.equal(draft.to, null, "the fixture has no e-mail, so `to` is null");
+  assert.match(draft.body, /^Hi Grace,/);
+  assert.match(draft.subject, /Zenith Capital/);
+  assert.match(draft.body, /Best regards,$/);
+});
+
+check("(h) the draft quotes the last interaction's note instead of inventing context", () => {
+  const draft = buildEasyMailDraft({
+    contact: mailContact({ email: "grace@zenith.example" }),
+    lastInteraction: mailInteraction({ kind: "call", note: "the Series B timeline." }),
+    today: MAIL_TODAY,
+  });
+
+  assert.equal(draft.to, "grace@zenith.example");
+  assert.match(draft.body, /Last time we spoke you mentioned the Series B timeline\./);
+  assert.ok(!draft.body.includes("the Series B timeline..".slice(0, 30) + "."), "no doubled full stop");
+});
+
+check("(h) a contact never contacted is described as such, not as a long gap", () => {
+  const draft = buildEasyMailDraft({
+    contact: mailContact(),
+    lastInteraction: null,
+    today: MAIL_TODAY,
+  });
+
+  assert.match(draft.body, /have not managed to speak since we connected/);
+  assert.match(draft.subject, /Following up since we connected/);
+
+  // Every opening sentence starts with a capital, whichever phrase it used.
+  for (const last of [null, mailInteraction(), mailInteraction({ occurred_on: "2026-09-19" })]) {
+    const body = buildEasyMailDraft({
+      contact: mailContact(),
+      lastInteraction: last,
+      today: MAIL_TODAY,
+    }).body;
+    const opening = body.split("\n")[2];
+    assert.match(opening, /^[A-Z]/, `opening must be capitalised: ${opening}`);
+  }
+});
+
+check("(h) a commercial relationship gets the business ask, a friend does not", () => {
+  const client = buildEasyMailDraft({
+    contact: mailContact({ relation: "Client" }),
+    lastInteraction: mailInteraction(),
+    today: MAIL_TODAY,
+  });
+  assert.match(client.body, /15 minutes/);
+
+  const friend = buildEasyMailDraft({
+    contact: mailContact({ relation: "Running club", company: null, company_norm: null, role: null }),
+    lastInteraction: mailInteraction(),
+    today: MAIL_TODAY,
+  });
+  assert.match(friend.body, /coffee or a quick call/);
+  assert.ok(!friend.body.includes("15 minutes"));
+});
+
+check("(h) worthContactingReason stays silent for an active contact", () => {
+  const recent = mailInteraction({ occurred_on: "2026-09-10" });
+  assert.equal(worthContactingReason(mailContact(), recent, MAIL_TODAY), null);
+
+  const stale = worthContactingReason(mailContact({ relation: "Client" }), mailInteraction(), MAIL_TODAY);
+  assert.ok(stale && stale.includes("commercial"), `commercial reason: ${stale}`);
+
+  const never = worthContactingReason(mailContact(), null, MAIL_TODAY);
+  assert.ok(never && never.includes("ever been logged"), `never-contacted reason: ${never}`);
 });
 
 console.log(failures === 0 ? "\nall checks green" : `\n${failures} check(s) failed`);

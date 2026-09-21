@@ -1,60 +1,47 @@
 "use client";
 
 /**
- * One form for create and edit. The network only decides the field order — business puts
- * company and role first, friends and family put the relation first — so there is no
- * second form and no per-network component.
+ * One form for create and edit, and one field order for everyone.
+ *
+ * Company and role come first because most of this address book is work, but they are
+ * optional like every other field: a friend with no company is a perfectly good contact,
+ * and `relation` is what clusters them instead.
  */
-import { useState, useTransition } from "react";
+import { useState } from "react";
 
-import { saveContact } from "@/lib/actions/contacts";
 import type { Contact, Network } from "@/lib/core/types";
 import { BTN, BTN_QUIET, Field, INPUT, Notice, TextField } from "@/components/primitives";
+import { useStore } from "@/lib/store/use-store";
 
 const FIELDS = {
-  first_name: { label: "Vorname", type: "text" },
-  last_name: { label: "Nachname", type: "text" },
-  company: { label: "Firma", type: "text" },
-  role: { label: "Rolle", type: "text" },
-  relation: { label: "Beziehung", type: "text" },
-  email: { label: "E-Mail", type: "email" },
-  phone: { label: "Telefon", type: "tel" },
-  city: { label: "Stadt", type: "text" },
-  tags: { label: "Tags (Komma-getrennt)", type: "text" },
-  profile_url: { label: "Profil-URL", type: "text" },
+  first_name: { label: "First name", type: "text" },
+  last_name: { label: "Last name", type: "text" },
+  company: { label: "Company", type: "text" },
+  role: { label: "Role", type: "text" },
+  relation: { label: "Relation", type: "text" },
+  email: { label: "E-mail", type: "email" },
+  phone: { label: "Phone", type: "tel" },
+  city: { label: "City", type: "text" },
+  tags: { label: "Tags (comma-separated)", type: "text" },
+  profile_url: { label: "Profile URL", type: "text" },
+  account_value: { label: "Account value (EUR / year)", type: "number" },
 } as const;
 
 type FieldName = keyof typeof FIELDS;
 
-const PERSONAL: FieldName[] = [
+const ORDER: FieldName[] = [
   "first_name",
   "last_name",
-  "relation",
-  "city",
-  "email",
-  "phone",
   "company",
   "role",
+  "relation",
+  "email",
+  "phone",
+  "city",
+  "account_value",
   "tags",
   "profile_url",
 ];
-
-const ORDER: Record<Network, FieldName[]> = {
-  business: [
-    "first_name",
-    "last_name",
-    "company",
-    "role",
-    "email",
-    "phone",
-    "city",
-    "relation",
-    "tags",
-    "profile_url",
-  ],
-  friends: PERSONAL,
-  family: PERSONAL,
-};
 
 export default function ContactForm({
   network,
@@ -67,12 +54,13 @@ export default function ContactForm({
   onDone: (contactId: string | null) => void;
   onCancel: () => void;
 }) {
+  const { saveContact } = useStore();
   const [error, setError] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
 
   const defaults = (name: FieldName): string => {
     if (!contact) return "";
     if (name === "tags") return contact.tags.join(", ");
+    if (name === "account_value") return contact.account_value?.toString() ?? "";
     return contact[name] ?? "";
   };
 
@@ -95,18 +83,22 @@ export default function ContactForm({
         .filter(Boolean),
       notes: text("notes"),
       profile_url: text("profile_url"),
+      crowdsourced: data.get("crowdsourced") === "on",
+      // Left as the raw string: validate.ts turns "" into null and strips separators, so a
+      // blank stays "unknown" rather than becoming a zero-value account.
+      account_value: text("account_value"),
     };
 
-    startTransition(async () => {
-      const result = await saveContact({ network, input, id: contact?.id ?? null });
-      if (result.error) setError(result.error);
-      else onDone(result.contact?.id ?? null);
-    });
+    const result = saveContact({ network, input, id: contact?.id ?? null });
+    if (result.error) setError(result.error);
+    else onDone(result.contact?.id ?? null);
   };
 
   return (
     <div className="panel max-h-full overflow-y-auto p-6">
-      <p className="label-mono">{contact ? "Kontakt bearbeiten" : "Kontakt anlegen"}</p>
+      <h2 className="text-2xl font-semibold leading-tight tracking-[-0.03em] text-foreground">
+        {contact ? "Edit contact" : "New contact"}
+      </h2>
 
       <form
         className="mt-4 space-y-3"
@@ -115,7 +107,7 @@ export default function ContactForm({
           submit(event.currentTarget);
         }}
       >
-        {ORDER[network].map((name) => (
+        {ORDER.map((name) => (
           <TextField
             key={name}
             name={name}
@@ -126,16 +118,31 @@ export default function ContactForm({
           />
         ))}
 
-        <Field label="Notizen">
+        <Field label="Notes">
           <textarea className={INPUT} name="notes" rows={4} defaultValue={contact?.notes ?? ""} />
         </Field>
 
+        <label className="flex items-start gap-2 pt-1 text-sm text-foreground">
+          <input
+            type="checkbox"
+            name="crowdsourced"
+            className="mt-0.5 h-4 w-4 shrink-0"
+            defaultChecked={contact?.crowdsourced ?? false}
+          />
+          <span>
+            Contains crowdsourced information
+            <span className="mt-0.5 block text-xs text-muted-foreground">
+              Shows a caution on their card. Nothing is shared anywhere.
+            </span>
+          </span>
+        </label>
+
         <div className="flex flex-wrap gap-3 pt-1">
-          <button type="submit" className={BTN} disabled={pending}>
-            {pending ? "Speichere …" : "Speichern"}
+          <button type="submit" className={BTN}>
+            Save
           </button>
-          <button type="button" className={BTN_QUIET} onClick={onCancel} disabled={pending}>
-            Abbrechen
+          <button type="button" className={BTN_QUIET} onClick={onCancel}>
+            Cancel
           </button>
         </div>
 

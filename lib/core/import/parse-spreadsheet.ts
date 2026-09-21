@@ -42,11 +42,13 @@ type Field =
   | "relation"
   | "tags"
   | "notes"
-  | "profile_url";
+  | "profile_url"
+  | "account_value";
 
 /**
- * Header aliases, German and English. Keys are already folded by `foldHeader`, so
- * "E-Mail", "e mail" and "EMAIL" all arrive here as "email".
+ * Header aliases. English first, German kept because a contact export from a German
+ * Outlook or CRM is exactly the file this importer exists for. Keys are already folded by
+ * `foldHeader`, so "E-Mail", "e mail" and "EMAIL" all arrive here as "email".
  */
 const HEADER_ALIASES: Record<string, Field> = {};
 
@@ -54,8 +56,8 @@ function alias(field: Field, ...names: string[]) {
   for (const name of names) HEADER_ALIASES[foldHeader(name)] = field;
 }
 
-alias("first_name", "Vorname", "First Name", "Firstname", "First", "Given Name", "Rufname");
-alias("last_name", "Nachname", "Last Name", "Lastname", "Last", "Surname", "Familienname");
+alias("first_name", "First Name", "Firstname", "First", "Given Name", "Vorname", "Rufname");
+alias("last_name", "Last Name", "Lastname", "Last", "Surname", "Nachname", "Familienname");
 alias("full_name", "Name", "Full Name", "Vollständiger Name", "Kontakt");
 alias("email", "E-Mail", "EMail", "Email", "Mail", "E-Mail-Adresse", "Email Address");
 alias("phone", "Telefon", "Tel", "Phone", "Mobil", "Mobile", "Handy", "Telefonnummer");
@@ -66,6 +68,16 @@ alias("relation", "Beziehung", "Relation", "Verhältnis", "Wie bekannt", "Woher"
 alias("tags", "Tags", "Tag", "Schlagworte", "Schlagwörter", "Kategorien", "Kategorie", "Labels");
 alias("notes", "Notizen", "Notiz", "Notes", "Note", "Kommentar", "Bemerkung");
 alias("profile_url", "Profil", "URL", "Link", "LinkedIn", "Website", "Webseite", "Profil-URL");
+alias(
+  "account_value",
+  "Account Value",
+  "Value",
+  "Revenue",
+  "ARR",
+  "Deal Size",
+  "Umsatz",
+  "Auftragswert",
+);
 
 /** Case-, umlaut- and separator-insensitive header key. "E-Mail Adresse" -> "emailadresse". */
 function foldHeader(raw: string): string {
@@ -82,6 +94,19 @@ const cell = (row: string[], index: number | undefined): string =>
   index === undefined ? "" : (row[index] ?? "").toString().replace(/\s+/g, " ").trim();
 
 const orNull = (value: string): string | null => value || null;
+
+/**
+ * "€40,000", "40.000", "40000" -> 40000. Separators are treated as thousands and cents
+ * are dropped: this is an annual account value, nobody imports it to the cent. An
+ * unparseable cell becomes null (unknown), never 0 — a zero-value account and an unvalued
+ * contact must rank differently.
+ */
+function moneyOrNull(value: string): number | null {
+  const digits = value.replace(/[^0-9]/g, "");
+  if (!digits) return null;
+  const amount = Number(digits);
+  return Number.isFinite(amount) ? amount : null;
+}
 
 function countKnownHeaders(row: string[]): number {
   const fields = new Set<Field>();
@@ -135,7 +160,7 @@ function buildRow(
   const full = cell(row, columns.full_name);
 
   if (full) {
-    // A combined column beside a "Vorname" column is the surname; on its own it is the
+    // A combined column beside a first-name column is the surname; on its own it is the
     // whole name and gets split.
     if (!first && !last) ({ first, last } = splitFullName(full));
     else if (!last) last = full;
@@ -148,11 +173,11 @@ function buildRow(
 
   const email = cell(row, columns.email);
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    problems.push(`E-Mail sieht nicht wie eine Adresse aus: "${email}"`);
+    problems.push(`E-mail does not look like an address: "${email}"`);
   }
 
   if (row.length > headerCount && row.slice(headerCount).some((v) => (v ?? "").toString().trim())) {
-    problems.push("Zeile hat mehr Spalten als die Kopfzeile");
+    problems.push("Row has more columns than the header");
   }
 
   const contact: ContactInput = {
@@ -167,11 +192,15 @@ function buildRow(
     tags: normalizeTags(cell(row, columns.tags)),
     notes: orNull(cell(row, columns.notes)),
     profile_url: orNull(cell(row, columns.profile_url)),
+    // A spreadsheet the user exported themselves is their own data, not crowdsourced.
+    // They can mark a contact by hand afterwards.
+    crowdsourced: false,
+    account_value: moneyOrNull(cell(row, columns.account_value)),
   };
 
   for (const [field, value] of Object.entries(contact)) {
     if (typeof value === "string" && value.length > MAX_FIELD_LENGTH) {
-      problems.push(`Feld "${field}" ist ungewöhnlich lang (${value.length} Zeichen)`);
+      problems.push(`Field "${field}" is unusually long (${value.length} characters)`);
     }
   }
 
@@ -182,7 +211,7 @@ function buildRow(
 function parseRows(rows: string[][]): ParseResult {
   const headerIndex = findHeaderRow(rows);
   if (headerIndex < 0) {
-    return { rows: [], headers: [], skipped: 0, error: "Die Datei enthält keine Daten." };
+    return { rows: [], headers: [], skipped: 0, error: "The file contains no data." };
   }
 
   const headers = rows[headerIndex].map((value) => (value ?? "").toString().trim());
@@ -193,12 +222,12 @@ function parseRows(rows: string[][]): ParseResult {
     columns.last_name === undefined &&
     columns.full_name === undefined
   ) {
-    const found = headers.filter(Boolean).join(", ") || "keine";
+    const found = headers.filter(Boolean).join(", ") || "none";
     return {
       rows: [],
       headers,
       skipped: 0,
-      error: `Keine Namensspalte gefunden. Gefundene Spalten: ${found}. Erwartet wird eine Spalte "Vorname", "Nachname" oder "Name" — die Vorlage zum Download passt garantiert.`,
+      error: `No name column found. Columns found: ${found}. A "First Name", "Last Name" or "Name" column is required — the downloadable template is guaranteed to fit.`,
     };
   }
 
@@ -263,7 +292,7 @@ function guessDelimiter(text: string): string {
 export function parseCsvText(text: string): ParseResult {
   const withoutBom = text.replace(/^﻿/, "");
   if (!withoutBom.trim()) {
-    return { rows: [], headers: [], skipped: 0, error: "Die Datei ist leer." };
+    return { rows: [], headers: [], skipped: 0, error: "The file is empty." };
   }
 
   // header:false because the header is not reliably the first line — prelude rows are
@@ -306,7 +335,7 @@ export async function parseSpreadsheet(file: File): Promise<ParseResult> {
       rows: [],
       headers: [],
       skipped: 0,
-      error: "Die Excel-Datei konnte nicht gelesen werden. Speichere sie als .xlsx oder .csv und versuche es erneut.",
+      error: "This Excel file could not be read. Save it as .xlsx or .csv and try again.",
     };
   }
 }

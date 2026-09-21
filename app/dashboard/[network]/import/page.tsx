@@ -9,19 +9,22 @@ export default async function ImportPage({ params }: { params: Promise<{ network
   if (!isNetwork(network)) notFound();
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10">
+    <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-10">
       <div className="flex flex-wrap items-baseline justify-between gap-4">
-        <h1 className="text-lg text-foreground">
+        <h1 className="text-2xl font-semibold leading-tight tracking-[-0.03em] text-foreground">
           Import — {NETWORK_LABELS[network]}
         </h1>
-        <Link className="text-sm text-muted-foreground underline hover:text-foreground" href={`/dashboard/${network}`}>
-          Zurück zur Mindmap
+        <Link
+          className="text-sm text-muted-foreground underline decoration-border-strong underline-offset-4 hover:text-foreground"
+          href={`/dashboard/${network}`}
+        >
+          Back to the mindmap
         </Link>
       </div>
 
       <p className="mt-3 max-w-prose text-sm text-muted-foreground">
-        Die Datei wird im Browser gelesen. Du siehst zuerst eine Vorschau und bestätigst
-        danach, was in dieses Netzwerk geschrieben wird.
+        The file is read in your browser. You see a preview first and then confirm what gets
+        written into this network.
       </p>
 
       <div className="mt-6">

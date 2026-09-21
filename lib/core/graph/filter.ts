@@ -15,7 +15,7 @@ function matchesAny(value: string | null, wanted: string[] | undefined): boolean
   return v ? wanted.some((w) => norm(w) === v) : false;
 }
 
-/** One hit is enough: a contact tagged "kunde, messe" matches a filter on "messe". */
+/** One hit is enough: a contact tagged "client, trade fair" matches a filter on "client". */
 function matchesSomeTag(tags: string[], wanted: string[] | undefined): boolean {
   if (!wanted || !wanted.length) return true;
   const own = new Set(tags.map(norm));
@@ -110,7 +110,7 @@ export function collectFacets(graph: Graph): Facets {
   }
 
   const sorted = (dimension: keyof Facets) =>
-    [...seen[dimension].values()].sort((a, b) => a.localeCompare(b, "de"));
+    [...seen[dimension].values()].sort((a, b) => a.localeCompare(b, "en"));
 
   return {
     companies: sorted("companies"),
