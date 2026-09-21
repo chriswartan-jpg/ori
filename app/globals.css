@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+/*
+ * Ori design system. Tokens are the single source of truth — see CLAUDE.md.
+ * Do not introduce a new color. Semantic colors carry meaning, never decoration.
+ */
+:root {
+  --background: #050505;
+  --card: #0a0a0a;
+  --secondary: #111111;
+  --muted: #171717;
+  --border: #232323;
+  --foreground: #f2f2f2;
+  --muted-foreground: #7a7a7a;
+
+  --confidence: #22c55e; /* verified */
+  --caution: #eab308;    /* medium */
+  --alert: #d92d20;      /* high, destructive */
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-card: var(--card);
+  --color-secondary: var(--secondary);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-foreground: var(--foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-confidence: var(--confidence);
+  --color-caution: var(--caution);
+  --color-alert: var(--alert);
+
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-jetbrains-mono);
+
+  --radius-panel: 0.375rem;
+}
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Flat surface with a 1px border. No shadow, no blur, no gradient. */
+.panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+}
+
+.label-mono {
+  font-family: var(--font-jetbrains-mono), ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted-foreground);
+}
+
+/* Motion is restrained: border-color and opacity only. */
+button,
+a,
+input,
+select,
+textarea,
+.panel {
+  transition: border-color 0.15s ease, opacity 0.15s ease, background-color 0.15s ease;
+}
+
+input,
+select,
+textarea {
+  background: var(--secondary);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  color: var(--foreground);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--muted-foreground);
+}
+
+::placeholder {
+  color: var(--muted-foreground);
+}
+
+::selection {
+  background: var(--muted);
+}
+
+:focus-visible {
+  outline: 1px solid var(--muted-foreground);
+  outline-offset: 2px;
+}
+
+/* Scrollbars stay inside the palette. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--background);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--muted);
+  border-radius: 4px;
+}
