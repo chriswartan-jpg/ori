@@ -6,6 +6,8 @@ you know them, and it tells you which relationships have gone quiet.**
 Built for the SBE business hackathon. Runs entirely in the browser — no sign-up, no server,
 no database.
 
+![Ori's cluster map, with 125 contacts, 27 gone quiet and EUR 3.6M of account value at risk](docs/screenshots/overview.png)
+
 ## The problem
 
 An address book is a list. You scroll it, you don't use it. Nobody opens a CRM to remember
@@ -33,6 +35,31 @@ So two things go wrong, and both cost money:
 - **Flags crowdsourced information.** A contact whose details came from somewhere other
   than the person themselves carries a visible caution. Provenance only — nothing is
   fetched from or sent to anywhere.
+
+## What it looks like
+
+**Open an account and it tells you what is inside it.** Saalfeld Pharma: seven contacts,
+two of them cold, €490K of annual value at risk — plus the roles, cities and relations that
+make up the account, and the names worth calling first.
+
+![The Saalfeld Pharma cluster opened, showing 7 contacts, 2 gone quiet and EUR 490K at risk](docs/screenshots/cluster.png)
+
+**EasyMail writes the reconnect email from the contact's own record.** It knows you have
+never spoken, it knows the company, and it knows this is a commercial relationship — so it
+asks for fifteen minutes rather than a coffee. Deterministic, offline, no model call: every
+sentence is derived from data already in the app.
+
+![The EasyMail dialog showing a generated reconnect email to Elena Liebig](docs/screenshots/easymail.png)
+
+**Sending closes the loop.** The email is logged, so the contact stops being counted as
+quiet and their value comes out of "at risk" — 27 cold contacts become 26, €3.6M becomes
+€3.2M, and the account drops off the cold list.
+
+![After sending, the contact reads "last contact: today" and the header falls to 26 gone quiet and EUR 3.2M at risk](docs/screenshots/logged.png)
+
+> The send itself is simulated in this build — there is no mail transport. The draft
+> generation and the interaction logging are real. See the header of
+> `components/easymail.tsx`.
 
 ## Run it
 
